@@ -1,0 +1,402 @@
+// Package config reads the anet-org configuration file.
+package config
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/ANetResearch/anet-org/internal/invite"
+)
+
+// Config is the whole file. Every key is described in docs/configuration.rst.
+type Config struct {
+	Org Org `json:"org"`
+
+	// Socket is the path of the Unix socket the server listens on.
+	Socket string `json:"socket"`
+	// SocketGroup, when set, gives the socket to this group with mode 0660;
+	// otherwise the socket is 0600 and only this account can connect.
+	SocketGroup string `json:"socket_group,omitempty"`
+	// PeerUsers lists further accounts (names or uids) whose processes may
+	// connect to the socket. This account is always allowed.
+	PeerUsers []string `json:"peer_users,omitempty"`
+	// TokenFile holds the bearer token the anet daemon presents (the same
+	// file as the node's modules.service token_file).
+	TokenFile string `json:"token_file"`
+	// Database is the SQLite file.
+	Database string `json:"database"`
+
+	// Admins are the AIDs that may call admin.* capabilities.
+	Admins []string `json:"admins,omitempty"`
+	// Staff are AIDs treated as staff (moderators) whatever their stored kind.
+	Staff []string `json:"staff,omitempty"`
+
+	// AllowLocalAdmin admits calls without X-ANet-Caller (a local call
+	// through the daemon, or a direct call with the token) as the operator,
+	// for admin.* and org.info only. Meant for tests; off by default.
+	AllowLocalAdmin bool `json:"allow_local_admin,omitempty"`
+
+	// MailboxMax is the number of messages a mailbox keeps; the oldest are
+	// dropped first.
+	MailboxMax int `json:"mailbox_max,omitempty"`
+	// Rates overrides the per-member rate limits by capability family.
+	Rates map[string]Rate `json:"rates,omitempty"`
+	// JoinsPerMinutePerCode bounds joins with one code.
+	JoinsPerMinutePerCode int `json:"joins_per_minute_per_code,omitempty"`
+	// MaxConcurrent bounds the calls the server handles at once.
+	MaxConcurrent int `json:"max_concurrent,omitempty"`
+
+	Assistant Assistant `json:"assistant"`
+}
+
+// Org describes the organisation.
+type Org struct {
+	Name             string `json:"name"`
+	Prefix           string `json:"prefix"`
+	Description      string `json:"description,omitempty"`
+	JoinInstructions string `json:"join_instructions,omitempty"`
+	Contact          string `json:"contact,omitempty"`
+}
+
+// Rate is a pair of limits for one family.
+type Rate struct {
+	PerMinute int `json:"per_minute"`
+	PerDay    int `json:"per_day"`
+}
+
+// Assistant configures the ask capability. With no upstream the assistant
+// is not configured and ask says so.
+type Assistant struct {
+	// Upstreams are OpenAI-compatible chat-completions endpoints, tried in
+	// the order listed; a busy or failing one is skipped for a cool-down.
+	Upstreams []Upstream `json:"upstreams,omitempty"`
+	// MemberDailyTokens and GlobalDailyTokens are the daily (UTC) token
+	// budgets, counted from the usage the API reports. Absent means the
+	// default; 0 means unlimited.
+	MemberDailyTokens *int64 `json:"member_daily_tokens,omitempty"`
+	GlobalDailyTokens *int64 `json:"global_daily_tokens,omitempty"`
+	MaxSteps          int    `json:"max_steps,omitempty"`
+	MaxOutputTokens   int    `json:"max_output_tokens,omitempty"`
+	// TimeoutSeconds bounds one request to an upstream.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// QueueSize bounds the ask requests waiting for an upstream slot, and
+	// QueueWaitSeconds how long one waits; beyond either, ask is refused
+	// with busy.
+	QueueSize        int `json:"queue_size,omitempty"`
+	QueueWaitSeconds int `json:"queue_wait_seconds,omitempty"`
+	// QuotaCooldownSeconds is how long an upstream that reported an
+	// exhausted quota is skipped when it names no reset time.
+	QuotaCooldownSeconds int `json:"quota_cooldown_seconds,omitempty"`
+	// BackoffBaseSeconds and BackoffMaxSeconds shape the exponential
+	// cool-down after a transient 429, a 5xx or a timeout.
+	BackoffBaseSeconds int `json:"backoff_base_seconds,omitempty"`
+	BackoffMaxSeconds  int `json:"backoff_max_seconds,omitempty"`
+}
+
+// Upstream is one chat-completions endpoint.
+type Upstream struct {
+	Name           string `json:"name"`
+	BaseURL        string `json:"base_url"`
+	Model          string `json:"model,omitempty"`
+	APIKeyFile     string `json:"api_key_file"`
+	MaxConcurrency int    `json:"max_concurrency,omitempty"`
+}
+
+// Configured reports whether at least one upstream is declared.
+func (a Assistant) Configured() bool { return len(a.Upstreams) > 0 }
+
+// MemberBudget and GlobalBudget are the effective budgets; 0 is unlimited.
+func (a Assistant) MemberBudget() int64 { return deref(a.MemberDailyTokens, DefaultMemberDailyTokens) }
+func (a Assistant) GlobalBudget() int64 { return deref(a.GlobalDailyTokens, DefaultGlobalDailyTokens) }
+
+func deref(p *int64, def int64) int64 {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
+// Defaults.
+const (
+	DefaultModel             = "deepseek-v4-1-flash-261017"
+	DefaultMaxConcurrency    = 8
+	DefaultMailboxMax        = 500
+	DefaultJoinsPerCode      = 30
+	DefaultMaxConcurrent     = 64
+	DefaultMemberDailyTokens = 2_000_000
+	DefaultGlobalDailyTokens = 200_000_000
+	DefaultMaxSteps          = 6
+	DefaultMaxOutputTokens   = 4096
+	DefaultTimeoutSeconds    = 90
+	DefaultQueueSize         = 64
+	DefaultQueueWaitSeconds  = 30
+	DefaultQuotaCooldown     = 3600
+	DefaultBackoffBase       = 30
+	DefaultBackoffMax        = 900
+)
+
+// DefaultRates are the per-member limits of each capability family.
+var DefaultRates = map[string]Rate{
+	"join":     {PerMinute: 10, PerDay: 50},
+	"read":     {PerMinute: 120, PerDay: 5000},
+	"msg":      {PerMinute: 20, PerDay: 300},
+	"write":    {PerMinute: 30, PerDay: 1000},
+	"ask":      {PerMinute: 6, PerDay: 100},
+	"admin":    {PerMinute: 60, PerDay: 2000},
+	"identity": {PerMinute: 10, PerDay: 50},
+}
+
+// maxConfigBytes bounds the configuration file.
+const maxConfigBytes = 1 << 20
+
+// Load reads, defaults and checks a configuration file.
+func Load(path string) (*Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxConfigBytes {
+		return nil, fmt.Errorf("config %s: larger than %d bytes", path, maxConfigBytes)
+	}
+	return Parse(raw)
+}
+
+// Parse decodes a configuration, applies defaults and checks it.
+func Parse(raw []byte) (*Config, error) {
+	var c Config
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if dec.More() {
+		return nil, errors.New("config: trailing data after the JSON object")
+	}
+	c.applyDefaults()
+	if err := c.check(); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (c *Config) applyDefaults() {
+	c.Org.Prefix = strings.ToUpper(strings.TrimSpace(c.Org.Prefix))
+	if c.MailboxMax <= 0 {
+		c.MailboxMax = DefaultMailboxMax
+	}
+	if c.JoinsPerMinutePerCode <= 0 {
+		c.JoinsPerMinutePerCode = DefaultJoinsPerCode
+	}
+	if c.MaxConcurrent <= 0 {
+		c.MaxConcurrent = DefaultMaxConcurrent
+	}
+	rates := map[string]Rate{}
+	for k, v := range DefaultRates {
+		rates[k] = v
+	}
+	for k, v := range c.Rates {
+		rates[k] = v
+	}
+	c.Rates = rates
+	a := &c.Assistant
+	for i := range a.Upstreams {
+		u := &a.Upstreams[i]
+		u.BaseURL = strings.TrimRight(strings.TrimSpace(u.BaseURL), "/")
+		if u.Model == "" {
+			u.Model = DefaultModel
+		}
+		if u.MaxConcurrency <= 0 {
+			u.MaxConcurrency = DefaultMaxConcurrency
+		}
+	}
+	setDefault(&a.QueueSize, DefaultQueueSize)
+	setDefault(&a.QueueWaitSeconds, DefaultQueueWaitSeconds)
+	setDefault(&a.QuotaCooldownSeconds, DefaultQuotaCooldown)
+	setDefault(&a.BackoffBaseSeconds, DefaultBackoffBase)
+	setDefault(&a.BackoffMaxSeconds, DefaultBackoffMax)
+	if a.MaxSteps <= 0 {
+		a.MaxSteps = DefaultMaxSteps
+	}
+	if a.MaxOutputTokens <= 0 {
+		a.MaxOutputTokens = DefaultMaxOutputTokens
+	}
+	if a.TimeoutSeconds <= 0 {
+		a.TimeoutSeconds = DefaultTimeoutSeconds
+	}
+}
+
+func setDefault(p *int, def int) {
+	if *p <= 0 {
+		*p = def
+	}
+}
+
+func (c *Config) check() error {
+	if strings.TrimSpace(c.Org.Name) == "" {
+		return errors.New("config: org.name is required")
+	}
+	if len(c.Org.Name) > 64 {
+		return errors.New("config: org.name is longer than 64 bytes")
+	}
+	if !invite.ValidPrefix(c.Org.Prefix) {
+		return fmt.Errorf("config: org.prefix %q must be 2 to 10 letters and digits, starting with a letter", c.Org.Prefix)
+	}
+	if len(c.Org.Description) > 1000 || len(c.Org.JoinInstructions) > 1000 || len(c.Org.Contact) > 200 {
+		return errors.New("config: org.description and org.join_instructions are limited to 1000 bytes, org.contact to 200")
+	}
+	if c.Socket == "" || !(filepath.IsAbs(c.Socket) || strings.HasPrefix(c.Socket, "$")) {
+		return errors.New("config: socket must be an absolute path (it may start with a variable such as ${XDG_RUNTIME_DIR})")
+	}
+	if len(c.Socket) > 100 {
+		return errors.New("config: socket path is longer than 100 bytes")
+	}
+	if c.TokenFile == "" {
+		return errors.New("config: token_file is required; the server refuses to run without a token")
+	}
+	if c.Database == "" {
+		return errors.New("config: database is required")
+	}
+	for _, list := range [][]string{c.Admins, c.Staff} {
+		for _, a := range list {
+			if !ValidAID(a) {
+				return fmt.Errorf("config: %q is not an AID", a)
+			}
+		}
+	}
+	for k, r := range c.Rates {
+		if _, ok := DefaultRates[k]; !ok {
+			return fmt.Errorf("config: rates: unknown family %q", k)
+		}
+		if r.PerMinute <= 0 || r.PerDay <= 0 {
+			return fmt.Errorf("config: rates.%s: per_minute and per_day must be positive", k)
+		}
+	}
+	if c.MailboxMax > 100000 {
+		return errors.New("config: mailbox_max is above 100000")
+	}
+	if c.JoinsPerMinutePerCode > 1000 {
+		return errors.New("config: joins_per_minute_per_code is above 1000")
+	}
+	a := c.Assistant
+	names := map[string]bool{}
+	for i, u := range a.Upstreams {
+		if u.Name == "" || len(u.Name) > 32 || names[u.Name] {
+			return fmt.Errorf("config: assistant.upstreams[%d]: a unique name of at most 32 bytes is required", i)
+		}
+		names[u.Name] = true
+		if !strings.HasPrefix(u.BaseURL, "https://") && !isLoopbackHTTP(u.BaseURL) {
+			return fmt.Errorf("config: assistant.upstreams[%d] (%s): base_url must be https (or http on a loopback address)", i, u.Name)
+		}
+		if u.APIKeyFile == "" {
+			return fmt.Errorf("config: assistant.upstreams[%d] (%s): api_key_file is required", i, u.Name)
+		}
+		if u.MaxConcurrency > 256 {
+			return fmt.Errorf("config: assistant.upstreams[%d] (%s): max_concurrency is above 256", i, u.Name)
+		}
+	}
+	if (a.MemberDailyTokens != nil && *a.MemberDailyTokens < 0) || (a.GlobalDailyTokens != nil && *a.GlobalDailyTokens < 0) {
+		return errors.New("config: assistant token budgets must not be negative (0 is unlimited)")
+	}
+	if a.MaxSteps > 12 {
+		return errors.New("config: assistant.max_steps is above 12")
+	}
+	return nil
+}
+
+func isLoopbackHTTP(u string) bool {
+	for _, p := range []string{"http://127.0.0.1:", "http://127.0.0.1/", "http://[::1]:", "http://localhost:"} {
+		if strings.HasPrefix(u, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidAID is a loose syntax check for an AID: 8 to 256 printable ASCII
+// characters without spaces or '#'.
+func ValidAID(s string) bool {
+	if len(s) < 8 || len(s) > 256 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= ' ' || c > '~' || c == '#' {
+			return false
+		}
+	}
+	return true
+}
+
+// ExpandPath expands $VAR and ${VAR} and requires an absolute result. An
+// unset variable is an error.
+func ExpandPath(raw string) (string, error) {
+	var unset []string
+	p := os.Expand(raw, func(k string) string {
+		v, ok := os.LookupEnv(k)
+		if !ok || v == "" {
+			unset = append(unset, k)
+		}
+		return v
+	})
+	if len(unset) > 0 {
+		return "", fmt.Errorf("%q: %s is not set", raw, strings.Join(unset, ", "))
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("%q must be an absolute path", raw)
+	}
+	return p, nil
+}
+
+// ReadSecret reads the first line of a secret file. The file must be a
+// regular file that other users cannot access, and the secret at least min
+// bytes without whitespace.
+func ReadSecret(raw string, min int) (string, error) {
+	p, err := ExpandPath(raw)
+	if err != nil {
+		return "", err
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", p)
+	}
+	if fi.Mode().Perm()&0o007 != 0 {
+		return "", fmt.Errorf("%s is accessible to other users (mode %04o); chmod o-rwx", p, fi.Mode().Perm())
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 4096))
+	if err != nil {
+		return "", err
+	}
+	s := string(b)
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	if len(s) < min {
+		return "", fmt.Errorf("%s: the secret is %d bytes, at least %d required", p, len(s), min)
+	}
+	for _, r := range s {
+		if r <= ' ' || r == 0x7f {
+			return "", fmt.Errorf("%s: the secret contains whitespace or control characters", p)
+		}
+	}
+	return s, nil
+}

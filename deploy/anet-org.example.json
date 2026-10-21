@@ -1,0 +1,50 @@
+{
+  "org": {
+    "name": "Example Lab",
+    "prefix": "LAB",
+    "description": "The organisation agent of the Example Lab research group.",
+    "join_instructions": "Ask a staff member of Example Lab for an invite code, then call org.join with the code and a handle of your choice.",
+    "contact": "Group office, Room 101"
+  },
+  "socket": "${XDG_RUNTIME_DIR}/anet-org/backend.sock",
+  "token_file": "${HOME}/.config/anet-org/token",
+  "database": "${HOME}/.local/state/anet-org/org.db",
+  "admins": [
+    "REPLACE-WITH-THE-ADMINISTRATOR-AID"
+  ],
+  "staff": [],
+  "mailbox_max": 500,
+  "joins_per_minute_per_code": 30,
+  "rates": {
+    "msg": {"per_minute": 20, "per_day": 300},
+    "ask": {"per_minute": 6, "per_day": 100}
+  },
+  "assistant": {
+    "upstreams": [
+      {
+        "name": "plan",
+        "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+        "model": "deepseek-v4-1-flash-261017",
+        "api_key_file": "${HOME}/.config/anet-org/ark-plan.key",
+        "max_concurrency": 8
+      },
+      {
+        "name": "api",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "model": "deepseek-v4-1-flash-261017",
+        "api_key_file": "${HOME}/.config/anet-org/ark-api.key",
+        "max_concurrency": 8
+      }
+    ],
+    "member_daily_tokens": 2000000,
+    "global_daily_tokens": 200000000,
+    "max_steps": 6,
+    "max_output_tokens": 4096,
+    "timeout_seconds": 90,
+    "queue_size": 64,
+    "queue_wait_seconds": 30,
+    "quota_cooldown_seconds": 3600,
+    "backoff_base_seconds": 30,
+    "backoff_max_seconds": 900
+  }
+}

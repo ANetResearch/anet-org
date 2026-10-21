@@ -1,0 +1,14 @@
+# anet-org-backup.service - a consistent copy of the organisation database
+# (systemd user unit, started daily by anet-org-backup.timer). The copy is
+# written with VACUUM INTO while the server runs, and replaces the previous
+# copy of the same weekday, so seven days are kept.
+[Unit]
+Description=Back up the anet-org database
+
+[Service]
+Type=oneshot
+Slice=anet-org.slice
+StateDirectory=anet-org/backups
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/bin/sh -c 'exec %h/.local/bin/anet-org backup --config %E/anet-org/anet-org.json --replace "%S/anet-org/backups/org-$(date -u +%%a).db"'

@@ -1,0 +1,41 @@
+# anet-org.service - the organisation agent (systemd user unit).
+#
+# Install into ~/.config/systemd/user/ of the dedicated account, with
+#   ~/.local/bin/anet-org                  the binary
+#   ~/.config/anet-org/anet-org.json       the configuration (deploy/anet-org.example.json)
+#   ~/.config/anet-org/token               the bearer token shared with the node (anet-org gen-token)
+# then: systemctl --user daemon-reload && systemctl --user enable --now anet-org anet-org-node
+# and, so the units run without a login session: loginctl enable-linger <account>.
+#
+# The program listens on a Unix socket in its runtime directory,
+# ${XDG_RUNTIME_DIR}/anet-org/backend.sock (mode 0600); the node's service
+# module checks the directory chain and the listener's uid before it sends
+# anything. The program opens no network port; the only outbound
+# connections are to the assistant's configured upstream URLs.
+[Unit]
+Description=anet-org organisation agent
+Documentation=https://github.com/ANetResearch/anet-org
+Before=anet-org-node.service
+
+[Service]
+Type=simple
+Slice=anet-org.slice
+ExecStart=%h/.local/bin/anet-org serve --config %E/anet-org/anet-org.json
+RuntimeDirectory=anet-org
+RuntimeDirectoryMode=0700
+StateDirectory=anet-org
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+CPUQuota=300%
+MemoryMax=3G
+TasksMax=256
+LimitNOFILE=4096
+
+[Install]
+WantedBy=default.target

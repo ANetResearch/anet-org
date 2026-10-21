@@ -1,0 +1,13 @@
+# anet-org.slice - the resource budget shared by the organisation agent and
+# its anet node (systemd user units). Install into ~/.config/systemd/user/.
+#
+# The CPU and memory controllers must be delegated to the user manager for
+# these limits to apply (systemctl show user@$(id -u).service -p Delegate).
+[Unit]
+Description=Organisation agent and its anet node
+
+[Slice]
+CPUQuota=400%
+MemoryMax=4G
+MemorySwapMax=0
+TasksMax=512

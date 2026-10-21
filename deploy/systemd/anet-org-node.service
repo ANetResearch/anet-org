@@ -1,0 +1,35 @@
+# anet-org-node.service - the anet node in front of the organisation agent
+# (systemd user unit).
+#
+# The node's data directory is ${XDG_STATE_HOME}/anet-org-node
+# (~/.local/state/anet-org-node). Its config.json carries the
+# modules.service block and the inbound.public_capabilities list that
+# `anet-org gen-config` prints. The binary is the one the anet installer
+# puts in ~/.local/bin.
+[Unit]
+Description=anet node of the organisation agent
+Documentation=https://github.com/ANetResearch/anet-org
+Wants=anet-org.service network-online.target
+After=anet-org.service network-online.target
+
+[Service]
+Type=simple
+Slice=anet-org.slice
+Environment=ANET_DATA_DIR=%S/anet-org-node
+StateDirectory=anet-org-node
+StateDirectoryMode=0700
+ExecStart=%h/.local/bin/anet daemon
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+CPUQuota=200%
+MemoryMax=2G
+TasksMax=256
+LimitNOFILE=8192
+
+[Install]
+WantedBy=default.target
