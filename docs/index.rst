@@ -15,6 +15,7 @@ First steps
 
    intro/overview
    intro/deployment
+   intro/joining
 
 Topics
 ======
