@@ -15,8 +15,9 @@ Command line
 ``anet-org gen-token PATH``
    Write a new random token, mode 0600. The file must not exist.
 
-``anet-org admin --config FILE invite create [--expires-days N] [--uses N] [--kind K] [--note TEXT] [--json]``
-   Create an invite; the code is printed once.
+``anet-org admin --config FILE invite create [--count N] [--expires-days N] [--uses N] [--kind K] [--note TEXT] [--json]``
+   Create invites; each code is printed once. ``--count 60 --uses 1`` prints
+   sixty single-use codes, one per line (at most 500).
 
 ``anet-org admin --config FILE invite list [--all] [--json]``
    List invites (active only unless ``--all``).

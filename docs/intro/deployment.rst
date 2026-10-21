@@ -46,7 +46,9 @@ Steps
    ~/.config/anet-org/anet-org.json`` and merge ``inbound`` and
    ``modules.service`` into ``$ANET_DATA_DIR/config.json``. Keep
    ``inbound.policy`` at ``closed``. ``deploy/node-config.example.json`` shows
-   the output for the example configuration.
+   the output for the example configuration. The capabilities that carry member
+   content are declared ``discard``, so the node keeps no copy of their
+   arguments and results (:doc:`../topics/security`).
 5. Put each administrator's AID on the node's allow list with ``anet peers
    allow <AID>``; the ``admin.*`` capabilities are ``allow_only``.
 6. Install the units and start them::
@@ -57,11 +59,15 @@ Steps
 
    As root, run ``loginctl enable-linger <account>`` once. The slice
    ``anet-org.slice`` limits both units together to 400 % CPU and 4 GiB of
-   memory; the user manager must have the CPU and memory controllers delegated.
+   memory; the memory limit needs the memory controller delegated to the user
+   manager, and the CPU quota the cpu controller (on systemd 249 the default
+   delegation is memory and pids only, so ``CPUQuota=`` then has no effect).
+   The units' sandboxing is described in :doc:`../topics/security`.
 7. Register at the hub: ``anet hub-register <hub URL> --name <name>``. A hub
    that admits by AID prints a line for its operator.
-8. Create invite codes with ``anet-org admin … invite create`` and announce
-   them together with the node's AID.
+8. Create invite codes with ``anet-org admin … invite create --count N --uses
+   1`` (one single-use code per person) and give them out together with the
+   node's AID.
 
 Backups
 =======

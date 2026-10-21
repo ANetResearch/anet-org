@@ -302,16 +302,22 @@ func TestBusyUpstreamSpillsToNext(t *testing.T) {
 }
 
 type budget struct {
-	used, limit int64
+	used, limit, reserved int64
 }
 
-func (b *budget) Check(context.Context) error {
-	if b.limit > 0 && b.used >= b.limit {
+func (b *budget) Reserve(_ context.Context, est int64) error {
+	if b.limit > 0 && b.used+est > b.limit {
 		return errors.New("budget")
 	}
+	b.used += est
+	b.reserved += est
 	return nil
 }
-func (b *budget) Charge(_ context.Context, n int64) error { b.used += n; return nil }
+func (b *budget) Settle(_ context.Context, est, actual int64) error {
+	b.used += actual - est
+	b.reserved -= est
+	return nil
+}
 
 func TestRunToolLoop(t *testing.T) {
 	step := 0
@@ -342,11 +348,31 @@ func TestRunToolLoop(t *testing.T) {
 			Run: func(_ context.Context, a json.RawMessage) (any, error) {
 				return map[string]json.RawMessage{"got": a}, nil
 			}}}})
-	if err != nil || res.Answer != "done" || res.Steps != 2 || res.Tokens != 112 || b.used != 112 {
+	if err != nil || res.Answer != "done" || res.Steps != 2 || res.Tokens != 112 || b.used != 112 || b.reserved != 0 {
 		t.Fatalf("run: %+v %v used %d", res, err, b.used)
 	}
 	b2 := &budget{limit: 10, used: 10}
 	if _, err := p.Run(context.Background(), Request{System: "s", User: "u", MaxSteps: 4, Budget: b2}); err == nil {
 		t.Fatal("exhausted budget not refused")
+	}
+}
+
+func TestTimeoutIsMaybeBilledAndDetached(t *testing.T) {
+	slow := newFake(t, "slow")
+	p := newPool(nil, slow)
+	p.cfg.Timeout = 100 * time.Millisecond
+	c, err := p.Complete(context.Background(), hi, nil, 10)
+	if err == nil || !c.MaybeBilled {
+		t.Fatalf("timeout: %+v %v", c, err)
+	}
+	// A caller that gives up does not cut the request short: the answer and
+	// its usage still arrive.
+	ok := newFake(t, "slow")
+	p = newPool(nil, ok)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	c, err = p.Complete(ctx, hi, nil, 10)
+	if err != nil || c.Usage.Tokens() != 35 {
+		t.Fatalf("detached request: %+v %v", c, err)
 	}
 }

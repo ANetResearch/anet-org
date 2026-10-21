@@ -83,44 +83,109 @@ func (s *Service) checkHandle(raw string) (string, error) {
 	return h, nil
 }
 
+// Skeleton folds the characters that look alike in a handle (1, l and i to
+// i; 0 and o to o; 5 and s to s) and drops the separators '-' and '_'. Two
+// handles with the same skeleton cannot be held by different members, so
+// "a1ice" or "alice_" cannot stand in for "alice".
+func Skeleton(h string) string {
+	var b strings.Builder
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		switch c {
+		case '-', '_':
+			continue
+		case '1', 'l':
+			c = 'i'
+		case '0':
+			c = 'o'
+		case '5':
+			c = 's'
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
 func (s *Service) reserved(h string) bool {
-	if reservedHandles[h] {
+	sk := Skeleton(h)
+	if reservedHandles[h] || reservedSkeletons[sk] {
 		return true
 	}
-	p := strings.ToLower(s.cfg.Org.Prefix)
-	if h == p || strings.HasPrefix(h, p+"-") || strings.HasPrefix(h, p+"_") {
+	if sk == Skeleton(s.cfg.Org.Prefix) || sk == Skeleton(strings.Join(strings.Fields(s.cfg.Org.Name), "-")) {
 		return true
 	}
-	name := strings.ToLower(strings.Join(strings.Fields(s.cfg.Org.Name), "-"))
-	if h == name {
-		return true
-	}
-	for _, w := range []string{"admin", "staff", "official", "moderator"} {
-		if strings.HasPrefix(h, w) {
+	// The first part of a separated handle may not be the prefix or anet:
+	// "lab-office", "1ab_news" and "anet-bot" are reserved, "label" is not.
+	if i := strings.IndexAny(h, "-_"); i > 0 {
+		first := Skeleton(h[:i])
+		if first == Skeleton(s.cfg.Org.Prefix) || first == Skeleton("anet") {
 			return true
 		}
 	}
-	if strings.HasPrefix(h, "anet-") || strings.HasPrefix(h, "anet_") {
-		return true
+	for _, w := range []string{"admin", "staff", "official", "moderator"} {
+		if strings.HasPrefix(sk, Skeleton(w)) {
+			return true
+		}
 	}
 	return false
 }
 
-// handleFree reports whether h may be taken by aid: no member holds it, and
-// no former holder other than aid has it on hold.
+// reservedSkeletons are the skeletons of the reserved handles.
+var reservedSkeletons = func() map[string]bool {
+	m := map[string]bool{}
+	for h := range reservedHandles {
+		m[Skeleton(h)] = true
+	}
+	return m
+}()
+
+// handleFree reports whether h may be taken by aid: no other member holds h
+// or a handle with the same skeleton, and no former holder other than aid
+// has such a handle on hold.
 func handleFree(ctx context.Context, tx *sql.Tx, h, aid string, now int64) (bool, error) {
+	sk := Skeleton(h)
 	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM members WHERE handle = ?`, h).Scan(&n); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM members WHERE (handle = ? OR skeleton = ?) AND aid <> ?`,
+		h, sk, aid).Scan(&n); err != nil {
 		return false, err
 	}
 	if n > 0 {
 		return false, nil
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM held_handles WHERE handle = ? AND until > ? AND aid <> ?`,
-		h, now, aid).Scan(&n); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM held_handles WHERE (handle = ? OR skeleton = ?) AND until > ? AND aid <> ?`,
+		h, sk, now, aid).Scan(&n); err != nil {
 		return false, err
 	}
 	return n == 0, nil
+}
+
+// fillSkeletons computes the skeleton of rows written before it existed.
+func (s *Service) fillSkeletons(ctx context.Context) error {
+	for _, t := range []string{"members", "held_handles"} {
+		rows, err := s.db.QueryContext(ctx, `SELECT handle FROM `+t+` WHERE skeleton = ''`)
+		if err != nil {
+			return err
+		}
+		var hs []string
+		for rows.Next() {
+			var h string
+			if err := rows.Scan(&h); err != nil {
+				rows.Close()
+				return err
+			}
+			hs = append(hs, h)
+		}
+		rows.Close()
+		for _, h := range hs {
+			if _, err := s.db.ExecContext(ctx, `UPDATE `+t+` SET skeleton = ? WHERE handle = ?`, Skeleton(h), h); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func errHandleTaken(h string) *Error {
@@ -201,7 +266,31 @@ type joinArgs struct {
 	Handle string `json:"handle"`
 }
 
+// failedJoinWindow is the window of the failed-join limits.
+const failedJoinWindow = 10 * time.Minute
+
 func (s *Service) orgJoin(ctx context.Context, c *call) (any, error) {
+	// Failed attempts are bounded per caller and for everyone, so guessing
+	// codes is slow; the per-code limit counts only successful joins, so
+	// failures with a known code cannot lock that code for others.
+	if over, retry := s.lim.Over("joinfail|"+c.caller.AID, failedJoinWindow, s.cfg.FailedJoinsPerCaller); over {
+		return nil, errRate(retry)
+	}
+	if over, retry := s.lim.Over("joinfail|*", failedJoinWindow, s.cfg.FailedJoinsGlobal); over {
+		return nil, errRate(retry)
+	}
+	res, err := s.join(ctx, c)
+	if err != nil {
+		if e := AsError(err); e == nil || (e.Code != CodeRateLimited && e.Code != CodeInternal) {
+			s.lim.Add("joinfail|"+c.caller.AID, failedJoinWindow)
+			s.lim.Add("joinfail|*", failedJoinWindow)
+		}
+		return nil, err
+	}
+	return res, nil
+}
+
+func (s *Service) join(ctx context.Context, c *call) (any, error) {
 	var a joinArgs
 	if err := decode(c.raw, &a); err != nil {
 		return nil, err
@@ -234,7 +323,8 @@ func (s *Service) orgJoin(ctx context.Context, c *call) (any, error) {
 	if err := inv.usable(now); err != nil {
 		return nil, err
 	}
-	if ok, retry := s.lim.Allow("code|"+itoa(inv.ID), s.cfg.JoinsPerMinutePerCode, 0); !ok {
+	codeKey := "code|" + itoa(inv.ID)
+	if over, retry := s.lim.Over(codeKey, time.Minute, s.cfg.JoinsPerMinutePerCode); over {
 		return nil, errRate(retry)
 	}
 
@@ -258,19 +348,20 @@ func (s *Service) orgJoin(ctx context.Context, c *call) (any, error) {
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil, newErr(http.StatusGone, CodeInviteUsedUp, "The invite code has no uses left.")
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO members(aid, handle, kind, joined_at, invite_id) VALUES(?, ?, ?, ?, ?)`,
-		c.caller.AID, h, inv.Kind, now, inv.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO members(aid, handle, skeleton, kind, joined_at, invite_id) VALUES(?, ?, ?, ?, ?, ?)`,
+		c.caller.AID, h, Skeleton(h), inv.Kind, now, inv.ID); err != nil {
 		if isUnique(err) {
 			return nil, errHandleTaken(h)
 		}
 		return nil, s.internal("join", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM held_handles WHERE handle = ? AND aid = ?`, h, c.caller.AID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM held_handles WHERE aid = ?`, c.caller.AID); err != nil {
 		return nil, s.internal("join", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, s.internal("join", err)
 	}
+	s.lim.Add(codeKey, time.Minute)
 	s.log.Info("member joined", "aid", c.caller.AID, "invite", inv.ID)
 	return map[string]any{
 		"joined": true,
@@ -330,7 +421,7 @@ func (s *Service) orgLeave(ctx context.Context, c *call) (any, error) {
 		return nil, newErr(http.StatusBadRequest, CodeConfirmRequired,
 			`Leaving deletes the membership and the mailbox. Call again with {"confirm": true}.`)
 	}
-	if err := s.removeMember(ctx, c.member); err != nil {
+	if err := s.removeMember(ctx, c.member, true); err != nil {
 		return nil, err
 	}
 	s.log.Info("member left", "aid", c.member.AID)
@@ -338,9 +429,11 @@ func (s *Service) orgLeave(ctx context.Context, c *call) (any, error) {
 		"note": "The membership and the mailbox were deleted. Joining again needs a new invite code."}, nil
 }
 
-// removeMember deletes a member and its mailbox, reopens the items it had
-// claimed and holds its handle for HandleHold.
-func (s *Service) removeMember(ctx context.Context, m *Member) error {
+// removeMember deletes a member and its mailbox and reopens the items it
+// had claimed. With hold (a member leaving), its handle stays reserved for
+// it for HandleHold; without (an administrator's removal), the handle and
+// any hold of the member are released at once.
+func (s *Service) removeMember(ctx context.Context, m *Member, hold bool) error {
 	now := s.now().Unix()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -354,8 +447,19 @@ func (s *Service) removeMember(ctx context.Context, m *Member) error {
 		{`DELETE FROM members WHERE aid = ?`, []any{m.AID}},
 		{`DELETE FROM messages WHERE to_aid = ?`, []any{m.AID}},
 		{`UPDATE board_items SET status = 'open', claimer_aid = NULL, updated_at = ? WHERE claimer_aid = ? AND status = 'claimed'`, []any{now, m.AID}},
-		{`INSERT INTO held_handles(handle, aid, until) VALUES(?, ?, ?)
-		  ON CONFLICT(handle) DO UPDATE SET aid = excluded.aid, until = excluded.until`, []any{m.Handle, m.AID, now + int64(HandleHold/time.Second)}},
+	}
+	if hold {
+		stmts = append(stmts, struct {
+			q    string
+			args []any
+		}{`INSERT INTO held_handles(handle, skeleton, aid, until) VALUES(?, ?, ?, ?)
+		  ON CONFLICT(handle) DO UPDATE SET aid = excluded.aid, until = excluded.until, skeleton = excluded.skeleton`,
+			[]any{m.Handle, Skeleton(m.Handle), m.AID, now + int64(HandleHold/time.Second)}})
+	} else {
+		stmts = append(stmts, struct {
+			q    string
+			args []any
+		}{`DELETE FROM held_handles WHERE aid = ?`, []any{m.AID}})
 	}
 	for _, st := range stmts {
 		if _, err := tx.ExecContext(ctx, st.q, st.args...); err != nil {
@@ -407,15 +511,15 @@ func (s *Service) orgRename(ctx context.Context, c *call) (any, error) {
 	if !free {
 		return nil, errHandleTaken(h)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE members SET handle = ?, renamed_at = ? WHERE aid = ?`, h, now, m.AID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE members SET handle = ?, skeleton = ?, renamed_at = ? WHERE aid = ?`, h, Skeleton(h), now, m.AID); err != nil {
 		if isUnique(err) {
 			return nil, errHandleTaken(h)
 		}
 		return nil, s.internal("rename", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO held_handles(handle, aid, until) VALUES(?, ?, ?)
-		ON CONFLICT(handle) DO UPDATE SET aid = excluded.aid, until = excluded.until`,
-		m.Handle, m.AID, now+int64(HandleHold/time.Second)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO held_handles(handle, skeleton, aid, until) VALUES(?, ?, ?, ?)
+		ON CONFLICT(handle) DO UPDATE SET aid = excluded.aid, until = excluded.until, skeleton = excluded.skeleton`,
+		m.Handle, Skeleton(m.Handle), m.AID, now+int64(HandleHold/time.Second)); err != nil {
 		return nil, s.internal("rename", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM held_handles WHERE handle = ? AND aid = ?`, h, m.AID); err != nil {

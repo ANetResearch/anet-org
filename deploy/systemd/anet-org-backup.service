@@ -10,4 +10,7 @@ Type=oneshot
 Slice=anet-org.slice
 ExecStartPre=/bin/mkdir -p -m 0700 %h/.local/state/anet-org/backups
 UMask=0077
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
 ExecStart=/bin/sh -c 'exec %h/.local/bin/anet-org backup --config %E/anet-org/anet-org.json --replace "%h/.local/state/anet-org/backups/org-$(date -u +%%a).db"'

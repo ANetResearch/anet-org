@@ -126,6 +126,10 @@ func TestRoutingAndBody(t *testing.T) {
 		t.Fatalf("empty body: %d", code)
 	}
 	code, m, _ := do(t, s, "GET", "/healthz", "", "", "", nil)
+	if code != 401 {
+		t.Fatalf("healthz without the token: %d %v", code, m)
+	}
+	code, m, _ = do(t, s, "GET", "/healthz", bearer, "", "", nil)
 	if code != 200 || m["status"] != "ok" {
 		t.Fatalf("healthz: %d %v", code, m)
 	}

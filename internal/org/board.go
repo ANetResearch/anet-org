@@ -25,7 +25,11 @@ const (
 	statusClaimed   = "claimed"
 	statusDone      = "done"
 	statusWithdrawn = "withdrawn"
+	statusDeleted   = "deleted"
 )
+
+// boardQueryWindow bounds the items a text query scans: the newest ones.
+const boardQueryWindow = 2000
 
 var tagRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,31}$`)
 
@@ -95,6 +99,9 @@ func (s *Service) item(ctx context.Context, id int64) (*ItemView, error) {
 	if err != nil {
 		return nil, s.internal("board", err)
 	}
+	if v.Status == statusDeleted {
+		return nil, newErr(http.StatusNotFound, CodeItemUnknown, "No board item has the id %d.", id)
+	}
 	return v, nil
 }
 
@@ -146,6 +153,9 @@ func (s *Service) post(ctx context.Context, m *Member, a postArgs) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	if err := s.checkQuota(ctx, m.AID, len(title)+len(body)); err != nil {
+		return nil, err
+	}
 	now := s.now().Unix()
 	res, err := s.db.ExecContext(ctx, `INSERT INTO board_items(author_aid, title, body, tags, status, created_at, updated_at)
 		VALUES(?, ?, ?, ?, 'open', ?, ?)`, m.AID, title, body, strings.Join(tags, ","), now, now)
@@ -191,7 +201,7 @@ func (s *Service) listBoard(ctx context.Context, m *Member, a boardListArgs) (ma
 		}
 		rows, err := s.db.QueryContext(ctx, `SELECT bc.id, COALESCE(mm.handle, ''), bc.created_at, bc.text
 			FROM board_comments bc LEFT JOIN members mm ON mm.aid = bc.author_aid
-			WHERE bc.item_id = ? ORDER BY bc.id ASC LIMIT 200`, a.ID)
+			WHERE bc.item_id = ? ORDER BY bc.id ASC LIMIT ?`, a.ID, maxCommentsPerIt)
 		if err != nil {
 			return nil, s.internal("board.list", err)
 		}
@@ -227,7 +237,7 @@ func (s *Service) listBoard(ctx context.Context, m *Member, a boardListArgs) (ma
 			where = append(where, "i.status = 'withdrawn'")
 		}
 	case "all":
-		where = append(where, "i.status <> 'withdrawn'")
+		where = append(where, "i.status IN ('open', 'claimed', 'done')")
 	default:
 		return nil, errInvalid("status", "use active, open, claimed, done, withdrawn or all.")
 	}
@@ -248,8 +258,10 @@ func (s *Service) listBoard(ctx context.Context, m *Member, a boardListArgs) (ma
 		if err != nil {
 			return nil, err
 		}
-		where = append(where, "(i.title LIKE ? ESCAPE '\\' OR i.body LIKE ? ESCAPE '\\')")
-		args = append(args, likeEscape(q), likeEscape(q))
+		// Only the newest items are searched, so a query costs a bounded scan.
+		where = append(where, "i.id >= (SELECT COALESCE(MIN(id), 0) FROM (SELECT id FROM board_items ORDER BY id DESC LIMIT ?))",
+			"(i.title LIKE ? ESCAPE '\\' OR i.body LIKE ? ESCAPE '\\')")
+		args = append(args, boardQueryWindow, likeEscape(q), likeEscape(q))
 	}
 	if a.Before > 0 {
 		where = append(where, "i.id < ?")
@@ -357,6 +369,11 @@ func (s *Service) boardDone(ctx context.Context, c *call) (any, error) {
 		return nil, err
 	}
 	m := c.member
+	if note != "" {
+		if err := s.checkQuota(ctx, m.AID, len(note)); err != nil {
+			return nil, err
+		}
+	}
 	v, err := s.item(ctx, a.ID)
 	if err != nil {
 		return nil, err
@@ -410,6 +427,9 @@ func (s *Service) boardComment(ctx context.Context, c *call) (any, error) {
 	if v.Status == statusWithdrawn {
 		return nil, newErr(http.StatusConflict, CodeItemClosed, "The item was withdrawn.")
 	}
+	if err := s.checkQuota(ctx, c.member.AID, len(body)); err != nil {
+		return nil, err
+	}
 	if v.CommentCount >= maxCommentsPerIt {
 		return nil, newErr(http.StatusConflict, CodeLimitReached, "The item has reached the limit of %d comments.", maxCommentsPerIt)
 	}
@@ -424,4 +444,46 @@ func (s *Service) boardComment(ctx context.Context, c *call) (any, error) {
 		return nil, s.internal("board.comment", err)
 	}
 	return map[string]any{"commented": true, "item_id": a.ID, "comment_id": id}, nil
+}
+
+// --- board.delete ---
+
+type deleteArgs struct {
+	ID int64 `json:"id"`
+}
+
+// boardDelete removes an item for good: only its author may. The row stays
+// (ids are not reused), its text, tags and comments are erased, and it is no
+// longer listed. The space counts against no quota afterwards.
+func (s *Service) boardDelete(ctx context.Context, c *call) (any, error) {
+	var a deleteArgs
+	if err := decode(c.raw, &a); err != nil {
+		return nil, err
+	}
+	if a.ID <= 0 {
+		return nil, errMissing("id")
+	}
+	v, err := s.item(ctx, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	if v.authorAID != c.member.AID {
+		return nil, errNotPermitted("the author of the item")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, s.internal("board.delete", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE board_items SET status = 'deleted', title = '', body = '', note = '', tags = '',
+		claimer_aid = NULL, updated_at = ? WHERE id = ?`, s.now().Unix(), a.ID); err != nil {
+		return nil, s.internal("board.delete", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM board_comments WHERE item_id = ?`, a.ID); err != nil {
+		return nil, s.internal("board.delete", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, s.internal("board.delete", err)
+	}
+	return map[string]any{"deleted": true, "id": a.ID}, nil
 }

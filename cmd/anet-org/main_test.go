@@ -68,7 +68,7 @@ func TestGenConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := v["modules"]["service"].(map[string]any)
-	if svc["token_file"] != "${CREDENTIALS_DIRECTORY}/token" || len(svc["capabilities"].([]any)) != 23 {
+	if svc["token_file"] != "${CREDENTIALS_DIRECTORY}/token" || len(svc["capabilities"].([]any)) != 25 {
 		t.Fatalf("gen-config: %s", out.String())
 	}
 	if !strings.Contains(out.String(), `"url": "unix:///run/user/1000/anet-org/backend.sock:/v1/org.join"`) {
@@ -92,5 +92,21 @@ func TestDeployExampleIsGenerated(t *testing.T) {
 	if out.String() != string(want) {
 		t.Fatal("deploy/node-config.example.json is stale; regenerate it with: XDG_RUNTIME_DIR=/run/user/1000 HOME=/home/anet-org " +
 			"anet-org gen-config --config deploy/anet-org.example.json > deploy/node-config.example.json")
+	}
+}
+
+func TestBulkInvitesOnTheCommandLine(t *testing.T) {
+	cfg := writeConfig(t)
+	var out bytes.Buffer
+	if err := cmdAdmin([]string{"--config", cfg, "invite", "create", "--count", "5", "--uses", "1"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	codes := regexp.MustCompile(`(?m)^LAB-[0-9A-Z]{4}-[0-9A-Z]{4}$`).FindAllString(out.String(), -1)
+	if len(codes) != 5 {
+		t.Fatalf("codes: %s", out.String())
+	}
+	out.Reset()
+	if err := cmdAdmin([]string{"--config", cfg, "invite", "create", "--count", "501"}, &out); err == nil {
+		t.Fatal("count above the cap accepted")
 	}
 }

@@ -16,12 +16,27 @@ type Tool struct {
 	Run         func(ctx context.Context, args json.RawMessage) (any, error)
 }
 
-// Budget is checked before every model call and charged after it.
+// Budget is reserved before every model call and settled after it.
 type Budget interface {
-	// Check returns an error when no further call may be made.
-	Check(ctx context.Context) error
-	// Charge records tokens used.
-	Charge(ctx context.Context, tokens int64) error
+	// Reserve charges an estimate of a call before it is made, or returns
+	// an error when the budget cannot cover it.
+	Reserve(ctx context.Context, estimate int64) error
+	// Settle replaces a reserved estimate by the tokens actually used.
+	Settle(ctx context.Context, estimate, actual int64) error
+}
+
+// Estimate is what a call is reserved at: half a token per character of
+// the conversation (a generous count for most text) plus the most the
+// completion may use.
+func Estimate(msgs []ChatMessage, maxTokens int) int64 {
+	n := 0
+	for _, m := range msgs {
+		n += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			n += len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
+	}
+	return int64(n/2 + maxTokens)
 }
 
 // Request is one ask.
@@ -68,26 +83,41 @@ func (p *Pool) Run(ctx context.Context, r Request) (Result, error) {
 		byName[t.Name] = t
 	}
 	msgs := []ChatMessage{{Role: "system", Content: r.System}, {Role: "user", Content: r.User}}
+	// Budget writes outlive a cancelled caller: what an upstream served is
+	// charged whether or not anyone waits for the answer.
+	bctx := context.WithoutCancel(ctx)
 	for step := 0; step < r.MaxSteps; step++ {
-		if err := r.Budget.Check(ctx); err != nil {
+		tools := specs
+		if step == r.MaxSteps-1 {
+			tools = nil // the last turn must answer
+		}
+		est := Estimate(msgs, r.MaxTokens)
+		if err := r.Budget.Reserve(bctx, est); err != nil {
 			if step == 0 {
 				return res, err
 			}
 			res.Stopped = "budget"
 			return res, nil
 		}
-		tools := specs
-		if step == r.MaxSteps-1 {
-			tools = nil // the last turn must answer
-		}
 		c, err := p.Complete(ctx, msgs, tools, r.MaxTokens)
 		if err != nil {
+			kept := int64(0)
+			if c.MaybeBilled {
+				kept = est
+			}
+			if serr := r.Budget.Settle(bctx, est, kept); serr != nil {
+				return res, serr
+			}
+			res.Tokens += kept
 			return res, err
 		}
 		res.Steps++
 		res.Tokens += c.Usage.Tokens()
 		res.Upstreams = append(res.Upstreams, c.Upstream)
-		if err := r.Budget.Charge(ctx, c.Usage.Tokens()); err != nil {
+		if err := r.Budget.Settle(bctx, est, c.Usage.Tokens()); err != nil {
+			return res, err
+		}
+		if err := ctx.Err(); err != nil {
 			return res, err
 		}
 		if len(c.ToolCalls) == 0 || tools == nil {

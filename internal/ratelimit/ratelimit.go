@@ -15,6 +15,7 @@ type Limiter struct {
 	mu    sync.Mutex
 	now   func() time.Time
 	m     map[string]*window
+	f     map[string]*fixed
 	calls int
 }
 
@@ -85,4 +86,68 @@ func (l *Limiter) Len() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.m)
+}
+
+// fixed is one fixed window of a key.
+type fixed struct {
+	start int64
+	n     int
+}
+
+// Over reports whether key has reached limit events in the current fixed
+// window of the given length, without counting anything, and the seconds
+// until that window ends. A limit of 0 or less is never reached.
+func (l *Limiter) Over(key string, window time.Duration, limit int) (bool, int) {
+	if limit <= 0 {
+		return false, 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	w, start, end := l.fixedWindow(key, window)
+	if w == nil || w.start != start {
+		return false, 0
+	}
+	return w.n >= limit, int(end - l.now().UTC().Unix())
+}
+
+// Add counts one event for key in its fixed window.
+func (l *Limiter) Add(key string, window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	w, start, _ := l.fixedWindow(key, window)
+	if w == nil {
+		w = &fixed{}
+		if l.f == nil {
+			l.f = map[string]*fixed{}
+		}
+		l.f[fixedKey(key, window)] = w
+	}
+	if w.start != start {
+		w.start, w.n = start, 0
+	}
+	w.n++
+	if len(l.f) > 100000 {
+		now := l.now().UTC().Unix()
+		for k, v := range l.f {
+			if now-v.start > 2*86400 {
+				delete(l.f, k)
+			}
+		}
+	}
+}
+
+func fixedKey(key string, window time.Duration) string {
+	return key + "@" + window.String()
+}
+
+// fixedWindow returns the stored window of key (or nil) and the bounds of
+// the current one.
+func (l *Limiter) fixedWindow(key string, window time.Duration) (*fixed, int64, int64) {
+	sec := int64(window / time.Second)
+	if sec <= 0 {
+		sec = 1
+	}
+	now := l.now().UTC().Unix()
+	start := now / sec * sec
+	return l.f[fixedKey(key, window)], start, start + sec
 }

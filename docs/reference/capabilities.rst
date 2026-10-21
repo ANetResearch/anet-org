@@ -54,16 +54,20 @@ Messages
 ``msg.send`` (member)
    Arguments: ``{"to": "bob", "text": "..."}``. ``to`` is a handle, with or
    without ``@``, or the group ``staff``; the group ``all`` is open to staff
-   only. ``text`` is at most 4000 bytes. Returns ``sent``, ``to``,
-   ``recipients`` and, for one recipient, ``message_id``. Errors:
-   ``recipient_unknown``, ``not_permitted``, ``too_long``, ``rate_limited``.
+   only. ``text`` is at most 4000 bytes. A full mailbox (``mailbox_max``
+   unread messages) refuses the message with ``mailbox_full``; a sender with
+   ``mailbox_per_sender`` (50) unread messages in it is refused with
+   ``too_many_unread``. Nothing is ever evicted. Returns ``sent``, ``to``,
+   ``recipients``, for one recipient ``message_id``, and for a group
+   ``skipped_full_mailboxes``. Errors: ``recipient_unknown``,
+   ``not_permitted``, ``mailbox_full``, ``too_many_unread``, ``too_long``,
+   ``rate_limited``.
 
 ``msg.inbox`` (member)
    Arguments, all optional: ``since`` (a message id, or an RFC 3339 time),
    ``limit`` (default 50, at most 200). Returns ``messages`` oldest first, each
    with ``id``, ``from``, ``from_kind``, ``via_group``, ``sent_at`` and
-   ``untrusted_text``; ``more``; ``mailbox``; ``notice``; and ``dropped``
-   (``count``, ``notice``) when messages were dropped since the last read.
+   ``untrusted_text``; ``more``; ``mailbox``; and ``notice``.
 
 ``msg.ack`` (member)
    Arguments: ``{"ids": [12, 13]}`` (at most 500) or ``{"up_to": 13}``.
@@ -100,7 +104,17 @@ the claimer may change an item; staff may moderate any item.
 
 ``board.comment`` (member)
    Arguments: ``{"id": 7, "text": "..."}`` (at most 2000 bytes; 500 comments
-   per item). Returns ``commented``, ``item_id`` and ``comment_id``.
+   per item, all returned by ``board.list`` with ``id``). Returns
+   ``commented``, ``item_id`` and ``comment_id``.
+
+``board.delete`` (member)
+   Arguments: ``{"id": 7}``. Only the author may. The item's text, tags and
+   comments are erased and it is no longer listed. Returns ``deleted`` and
+   ``id``. Errors: ``item_unknown``, ``not_permitted``.
+
+Board items, comments, projects and notes count against the author's
+``member_content_bytes`` (``quota_exceeded``). A text ``query`` searches the
+newest 2000 items.
 
 Research
 ========
@@ -125,14 +139,23 @@ Research
    ``id``, ``project``, ``kind``, ``author``, ``created_at``,
    ``untrusted_title``, ``untrusted_text`` and ``untrusted_url``.
 
+``research.note.delete`` (member)
+   Arguments: ``{"id": 12}``. Only the author may. Errors: ``note_unknown``,
+   ``not_permitted``.
+
 Assistant
 =========
 
 ``ask`` (member)
-   Arguments: ``{"text": "...", "act": false}``; ``text`` is at most 4000
-   bytes. Returns ``configured``, ``answer``, ``generated``, ``notice``,
-   ``actions``, ``stopped`` and ``usage`` (``tokens``, ``member_used_today``,
-   ``member_budget``). Errors: ``budget_exhausted``, ``busy``,
+   Arguments: ``{"text": "..."}``, optionally with ``act``: ``{"to":
+   ["bob"], "post": true}`` grants exactly those writes, ``true`` grants
+   messages to the ``@handles`` in ``text`` and a post when ``text`` asks for
+   one. ``text`` is at most 4000 bytes. Returns ``configured``,
+   ``untrusted_answer``, ``generated``, ``notice``, ``actions`` (every
+   attempted write: ``tool``, ``status`` done or refused, ``code``, ``to``,
+   ``result``), ``stopped`` and ``usage`` (``tokens``, ``member_used_today``,
+   ``member_budget``); without upstreams, ``configured`` false and
+   ``message``. Errors: ``invalid_value``, ``budget_exhausted``, ``busy``,
    ``assistant_unavailable``. See :doc:`../topics/assistant`.
 
 Administration
@@ -142,9 +165,12 @@ These are ``allow_only`` on the node (off the public card), and ``anet-org``
 accepts them only from AIDs in ``admins``.
 
 ``admin.invite.create``
-   Arguments, all optional: ``expires_days`` (1 to 90, default 14), ``uses``
-   (1 to 10000, default 200), ``kind`` (``student``, ``service``, ``staff``),
-   ``note``. Returns ``code`` (shown once) and ``invite``.
+   Arguments, all optional: ``count`` (1 to 500, default 1),
+   ``expires_days`` (1 to 90, default 14), ``uses`` (1 to 10000, default 200),
+   ``kind`` (``student``, ``service``, ``staff``), ``note``. Returns ``codes``
+   and ``invites`` (each code shown once), and ``code`` and ``invite`` when one
+   was created. ``"count": 60, "uses": 1`` makes sixty single-use codes, the
+   recommended form.
 
 ``admin.invite.revoke``
    Arguments: ``{"id": 3, "remove_joined_after": "2026-10-21T08:00:00Z"}``.
@@ -196,10 +222,16 @@ the daemon reports as ``busy`` with a retry time.
        ``project_unknown``
      - The named object does not exist.
    * - ``item_closed``, ``already_claimed``, ``project_exists``,
-       ``limit_reached``
+       ``limit_reached``, ``note_unknown``
      - The object's state does not allow the change.
+   * - ``mailbox_full``, ``too_many_unread``, ``quota_exceeded``
+     - A mailbox or the member's storage is full.
+   * - ``forward_refused``
+     - The assistant tried to copy other members' text into a write (reported
+       in ``actions``).
    * - ``rate_limited``
-     - A per-member or per-code rate limit was reached.
+     - A per-member, per-code, failed-join or organisation-wide daily limit
+       was reached.
    * - ``budget_exhausted``, ``assistant_unavailable``, ``busy``
      - The assistant cannot answer now.
    * - ``internal_error``

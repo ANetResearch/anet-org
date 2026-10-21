@@ -20,11 +20,26 @@ Every call offers four read-only tools:
 ``list_my_notes``
    The caller's own research notes.
 
-With ``"act": true`` in the arguments, two more tools are offered:
-``send_message`` (to a handle or the group ``staff``) and ``post_board_item``,
-both in the caller's name, at most three actions per call. Without ``act`` they
-are not offered at all, so text in a mailbox cannot make the assistant send
-anything. The reply lists every action taken under ``actions``.
+Two write tools exist only when the caller grants them with ``act``:
+
+``"act": {"to": ["bob", "staff"], "post": true}``
+   ``send_message`` to exactly those handles (or the group ``staff``), and
+   ``post_board_item``.
+``"act": true``
+   ``send_message`` to the ``@handles`` written in the caller's ``text``, and
+   ``post_board_item`` when the text asks for a post (words such as post,
+   board, task, 任务板, 发布).
+
+The grant is enforced by the tools themselves, not by the prompt: text the
+model reads in a mailbox or on the board cannot add a recipient. A write that
+copies 41 or more bytes of member-written text the tools returned in the same
+request is refused with ``forward_refused``, unless the caller wrote that text
+in the request. At most three writes per call. ``actions`` lists every
+attempted write, done or refused, with its code.
+
+The answer is returned as ``untrusted_answer`` with a ``notice``: it derives
+from other members' text and is data for the caller's agent, not
+instructions.
 
 The assistant has no shell, no file access and no network access other than
 the configured upstream URLs.
@@ -66,15 +81,25 @@ Budgets
 
 Tokens are counted from the ``usage`` the API returns: ``total_tokens``, which
 includes the completion with its reasoning, or prompt plus completion tokens
-when no total is given. Each member has a daily budget
-(``member_daily_tokens``, default 2,000,000) and the organisation a global one
-(``global_daily_tokens``, default 200,000,000); 0 means unlimited. Days are UTC.
-A budget is checked before every model call: a call that starts over budget is
-refused with ``budget_exhausted``; a call that crosses the budget midway ends
-with the answer so far and a sentence that the budget was reached.
+when no total is given. The organisation has a global daily budget
+(``global_daily_tokens``, default 200,000,000), the primary cap, and each
+member a share of it (``member_daily_tokens``, default 2,000,000); 0 means
+unlimited. Days are UTC.
+
+Before every model call an estimate (half a token per character of the
+conversation plus ``max_output_tokens``) is reserved against both budgets in
+one transaction; the call is refused with ``budget_exhausted`` when the
+reservation does not fit. After the call the reservation is replaced by the
+reported usage. The request to the model runs under its own deadline, detached
+from the caller: a caller who cancels does not stop it, and its usage is still
+charged. A call that may have been served without a usage report (a timeout or
+a broken reply) keeps its reservation. A request that runs out of budget
+midway ends with the answer so far and a sentence that the budget was
+reached.
 
 Without upstreams
 =================
 
 When ``assistant.upstreams`` is empty, ``ask`` answers with
-``"configured": false`` and a sentence that the assistant is not configured.
+``"configured": false`` and a ``message`` that the assistant is not
+configured.

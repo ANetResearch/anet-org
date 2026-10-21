@@ -18,6 +18,9 @@ const (
 	DefaultInviteUses = 200
 	MaxInviteUses     = 10000
 	maxInviteNote     = 200
+	// MaxInviteBatch bounds the codes one call creates. Single-use codes,
+	// one per person, are the recommended way to limit Sybil joins.
+	MaxInviteBatch = 500
 )
 
 // Invite is one row of the invites table (without its hash).
@@ -114,15 +117,46 @@ func (s *Service) findInvite(ctx context.Context, code string) (*Invite, error) 
 
 // InviteOptions are the parameters of a new invite.
 type InviteOptions struct {
+	// Count is the number of codes to create (1 when 0), each with the same
+	// settings; at most MaxInviteBatch.
+	Count       int    `json:"count"`
 	ExpiresDays int    `json:"expires_days"`
 	Uses        int    `json:"uses"`
 	Kind        string `json:"kind"`
 	Note        string `json:"note"`
 }
 
+// CreateInvites makes o.Count codes (one when 0) with the same settings, in
+// one transaction-free batch; on an error the codes made so far stay valid
+// and are returned with it.
+func (s *Service) CreateInvites(ctx context.Context, by string, o InviteOptions) ([]string, []InviteView, error) {
+	n := o.Count
+	if n == 0 {
+		n = 1
+	}
+	if n < 1 || n > MaxInviteBatch {
+		return nil, nil, errInvalid("count", "use 1 to 500.")
+	}
+	o.Count = 1
+	var codes []string
+	var views []InviteView
+	for i := 0; i < n; i++ {
+		c, v, err := s.CreateInvite(ctx, by, o)
+		if err != nil {
+			return codes, views, err
+		}
+		codes = append(codes, c)
+		views = append(views, v)
+	}
+	return codes, views, nil
+}
+
 // CreateInvite makes a new code and returns it with its record. by names
 // the administrator (an AID, or "operator" for the command line).
 func (s *Service) CreateInvite(ctx context.Context, by string, o InviteOptions) (string, InviteView, error) {
+	if o.Count > 1 {
+		return "", InviteView{}, errInvalid("count", "use CreateInvites for more than one code.")
+	}
 	if o.ExpiresDays == 0 {
 		o.ExpiresDays = DefaultInviteDays
 	}
@@ -210,7 +244,7 @@ func (s *Service) RevokeInvite(ctx context.Context, by string, id int64, removeA
 			if m == nil {
 				continue
 			}
-			if err := s.removeMember(ctx, m); err != nil {
+			if err := s.removeMember(ctx, m, false); err != nil {
 				return removed, err
 			}
 			removed++
@@ -256,7 +290,7 @@ func (s *Service) RemoveMember(ctx context.Context, by, handle string, ban bool)
 	if m == nil {
 		return nil, newErr(http.StatusNotFound, CodeMemberUnknown, "No member has the handle %q.", h)
 	}
-	if err := s.removeMember(ctx, m); err != nil {
+	if err := s.removeMember(ctx, m, false); err != nil {
 		return nil, err
 	}
 	if ban {
@@ -328,12 +362,20 @@ func (s *Service) adminInviteCreate(ctx context.Context, c *call) (any, error) {
 	if err := decode(c.raw, &a); err != nil {
 		return nil, err
 	}
-	code, v, err := s.CreateInvite(ctx, adminName(c), a)
-	if err != nil {
+	codes, vs, err := s.CreateInvites(ctx, adminName(c), a)
+	if err != nil && len(codes) == 0 {
 		return nil, err
 	}
-	return map[string]any{"code": code, "invite": v,
-		"notice": "The code is shown only once; only its hash is stored. Share it with the people who should join."}, nil
+	out := map[string]any{"codes": codes, "invites": vs,
+		"notice": "Each code is shown only once; only its hash is stored. Give each person their own single-use code where possible."}
+	if len(codes) == 1 {
+		out["code"] = codes[0]
+		out["invite"] = vs[0]
+	}
+	if err != nil {
+		out["incomplete"] = true
+	}
+	return out, nil
 }
 
 type revokeArgs struct {

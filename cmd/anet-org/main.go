@@ -3,7 +3,7 @@
 //	anet-org serve      --config FILE
 //	anet-org gen-config --config FILE [--token-file PATH] [--public-admin]
 //	anet-org gen-token  PATH
-//	anet-org admin      --config FILE invite create [--expires-days N] [--uses N] [--kind K] [--note TEXT]
+//	anet-org admin      --config FILE invite create [--count N] [--expires-days N] [--uses N] [--kind K] [--note TEXT]
 //	anet-org admin      --config FILE invite list [--all]
 //	anet-org admin      --config FILE invite revoke ID [--remove-joined-after TIME]
 //	anet-org admin      --config FILE member list [--query Q]
@@ -47,7 +47,7 @@ Usage:
   anet-org serve      --config FILE
   anet-org gen-config --config FILE [--token-file PATH] [--public-admin]
   anet-org gen-token  PATH
-  anet-org admin      --config FILE invite create [--expires-days N] [--uses N] [--kind K] [--note TEXT]
+  anet-org admin      --config FILE invite create [--count N] [--expires-days N] [--uses N] [--kind K] [--note TEXT]
   anet-org admin      --config FILE invite list [--all]
   anet-org admin      --config FILE invite revoke ID [--remove-joined-after RFC3339]
   anet-org admin      --config FILE member list [--query Q]
@@ -331,6 +331,7 @@ func cmdAdmin(args []string, out io.Writer) error {
 	fs, cfgPath := flags("admin")
 	expires := fs.Int("expires-days", 0, "invite validity in days (default 14, at most 90)")
 	uses := fs.Int("uses", 0, "invite uses (default 200)")
+	count := fs.Int("count", 1, "number of codes to create (at most 500)")
 	kind := fs.String("kind", "", "member kind for an invite: student, service or staff")
 	note := fs.String("note", "", "invite note")
 	all := fs.Bool("all", false, "include inactive invites")
@@ -364,17 +365,32 @@ func cmdAdmin(args []string, out io.Writer) error {
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	switch pos[0] + " " + pos[1] {
 	case "invite create":
-		code, v, err := svc.CreateInvite(ctx, by, org.InviteOptions{ExpiresDays: *expires, Uses: *uses, Kind: *kind, Note: *note})
-		if err != nil {
+		codes, vs, err := svc.CreateInvites(ctx, by, org.InviteOptions{Count: *count, ExpiresDays: *expires, Uses: *uses, Kind: *kind, Note: *note})
+		if err != nil && len(codes) == 0 {
 			return err
 		}
 		if *asJSON {
-			return emit(map[string]any{"code": code, "invite": v})
+			out := map[string]any{"codes": codes, "invites": vs}
+			if len(codes) == 1 {
+				out["code"], out["invite"] = codes[0], vs[0]
+			}
+			if eerr := emit(out); eerr != nil {
+				return eerr
+			}
+			return err
 		}
-		fmt.Fprintf(out, "Invite code: %s\n", code)
-		fmt.Fprintf(out, "Id %d, kind %s, %d uses, expires %s.\n", v.ID, v.Kind, v.MaxUses, v.ExpiresAt)
-		fmt.Fprintln(out, "The code is shown only once; only its hash is stored.")
-		return nil
+		if len(codes) == 1 {
+			fmt.Fprintf(out, "Invite code: %s\n", codes[0])
+			fmt.Fprintf(out, "Id %d, kind %s, %d uses, expires %s.\n", vs[0].ID, vs[0].Kind, vs[0].MaxUses, vs[0].ExpiresAt)
+			fmt.Fprintln(out, "The code is shown only once; only its hash is stored.")
+			return err
+		}
+		fmt.Fprintf(out, "%d invite codes, kind %s, %d uses each, expiring %s:\n", len(codes), vs[0].Kind, vs[0].MaxUses, vs[0].ExpiresAt)
+		for _, c := range codes {
+			fmt.Fprintln(out, c)
+		}
+		fmt.Fprintln(out, "The codes are shown only once; only their hashes are stored. Give each person one code.")
+		return err
 	case "invite list":
 		vs, err := svc.ListInvites(ctx, *all)
 		if err != nil {

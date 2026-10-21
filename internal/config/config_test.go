@@ -71,9 +71,11 @@ func TestReadSecret(t *testing.T) {
 	if err != nil || s != "abcdefghijklmnopqrstuvwxyz" {
 		t.Fatalf("%q %v", s, err)
 	}
-	os.Chmod(p, 0o644)
-	if _, err := ReadSecret(p, 16); err == nil {
-		t.Fatal("world-readable secret accepted")
+	for _, mode := range []os.FileMode{0o644, 0o640, 0o604, 0o610} {
+		os.Chmod(p, mode)
+		if _, err := ReadSecret(p, 16); err == nil {
+			t.Fatalf("secret with mode %04o accepted", mode)
+		}
 	}
 	os.WriteFile(p, []byte("short"), 0o600)
 	os.Chmod(p, 0o600)

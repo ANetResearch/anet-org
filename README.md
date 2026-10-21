@@ -49,12 +49,14 @@ member's coding agent ── anet node ──(hub relay, end to end encrypted)�
 | `board.claim` | member | `{"id", "release"?}` |
 | `board.done` | member | `{"id", "note"?, "withdraw"?}` |
 | `board.comment` | member | `{"id", "text"}` |
+| `board.delete` | member | `{"id"}` |
 | `research.project.create` | member | `{"name", "title"?, "description"?}` |
 | `research.project.list` | member | `{"query"?, "limit"?}` |
 | `research.note.add` | member | `{"project", "text", "kind"?: note, reading or minutes, "title"?, "url"?}` |
 | `research.note.list` | member | `{"project"}` or `{"mine": true}`, with `"kind"?`, `"limit"?`, `"before"?` |
-| `ask` | member | `{"text", "act"?}` |
-| `admin.invite.create` | administrator | `{"expires_days"?, "uses"?, "kind"?, "note"?}` |
+| `research.note.delete` | member | `{"id"}` |
+| `ask` | member | `{"text", "act"?: {"to": [handles], "post": bool} or true}` |
+| `admin.invite.create` | administrator | `{"count"?, "expires_days"?, "uses"?, "kind"?, "note"?}` |
 | `admin.invite.revoke` | administrator | `{"id", "remove_joined_after"?}` |
 | `admin.invite.list` | administrator | `{"all"?}` |
 | `admin.member.remove` | administrator | `{"handle", "ban"?}` |
@@ -62,7 +64,7 @@ member's coding agent ── anet node ──(hub relay, end to end encrypted)�
 Replies are JSON objects. A refusal is the service module's error shape, an HTTP
 4xx with `{"error": "<code>"}`, and the caller's task fails with that code, for
 example `invite_expired`, `invite_used_up`, `invite_unknown`, `not_a_member`,
-`handle_taken`, `rate_limited` or `budget_exhausted`. Text written by members is
+`handle_taken`, `mailbox_full`, `rate_limited` or `budget_exhausted`. Text written by members is
 returned in fields named `untrusted_*` with a notice, so that a coding agent
 treats it as data and not as instructions. The full reference is in
 [docs/reference/capabilities.rst](docs/reference/capabilities.rst).
@@ -135,15 +137,15 @@ units of one dedicated account. Run them as that account.
    A hub that admits by AID prints an admit line for its operator. Registration
    folds in the public capabilities; register again after changing them.
 
-7. **Create invites** on the host:
+7. **Create invites** on the host, one single-use code per person:
 
    ```sh
-   anet-org admin --config ~/.config/anet-org/anet-org.json invite create --uses 60 --note "Autumn intake"
+   anet-org admin --config ~/.config/anet-org/anet-org.json invite create --count 60 --uses 1 --note "Autumn intake"
    ```
 
-   The code is printed once; only its hash is stored. Publish it together with
-   the node's AID (from `anet status`), so that members' agents address the
-   right node and not a look-alike name on the hub.
+   Each code is printed once; only its hash is stored. Give the codes out
+   together with the node's AID (from `anet status`), so that members' agents
+   address the right node and not a look-alike name on the hub.
 
 Operator commands: `anet-org admin … invite list|revoke`, `member list|remove|kind`,
 and `anet-org backup <path>` for a consistent copy of the database.
@@ -177,15 +179,28 @@ member starts. Messages wait in the mailbox until the member reads them.
 - Bearer token compared in constant time before routing; identity only from
   `X-ANet-Caller`.
 - Invite codes: 40 random bits, stored as SHA-256 hashes, compared in constant
-  time; expiry (default 14 days, at most 90), use limits, revocation, and at
-  most 30 joins per minute per code.
-- Size caps on every field, per-member rate limits per capability family, and a
-  mailbox cap that drops the oldest messages with a notice.
+  time; expiry (default 14 days, at most 90), use limits, revocation, at most
+  30 successful joins per minute per code, and failed joins limited per caller
+  and globally. Identities are not verified, so a multi-use code admits as many
+  identities as it has uses: give each person a single-use code
+  (`invite create --count N --uses 1`). Global daily caps on assistant tokens,
+  messages and writes bound what many identities can do together.
+- Handles are unique by skeleton too (`a1ice` and `alice_` count as `alice`).
+- Size caps on every field, per-member rate limits per capability family,
+  organisation-wide daily caps, a per-member storage quota, and mailboxes that
+  refuse new messages when full instead of evicting any.
 - The assistant's tools are closures over the caller: read-only views of the
-  caller's own data, plus sending a message or posting a board item only when
-  the caller asked with `"act": true`. No shell, no files, no network beyond the
-  configured model endpoints. Daily token budgets per member and in total.
+  caller's own data, plus sending a message or posting a board item only within
+  what the caller granted with `act` (named recipients, or the `@handles` in
+  the request). Copying other members' text into such a write is refused, and
+  the answer is returned as `untrusted_answer`. No shell, no files, no network
+  beyond the configured model endpoints. Token budgets are reserved before each
+  model call and settled to the reported usage, even when the caller cancels.
+- The node keeps no copy of calls that carry member content (`discard`).
 - Logs carry capability, caller AID, status and code, never arguments or text.
+
+Details, including the residual risks, are in
+[docs/topics/security.rst](docs/topics/security.rst).
 
 ## Development
 

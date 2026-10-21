@@ -14,7 +14,12 @@ agent find the organisation's node, read its card and call::
 The code is case-insensitive, and separators are optional. A handle has 2 to 24
 characters (lower-case letters, digits, ``_`` and ``-``, starting with a
 letter). Names that suggest authority or a function of the organisation are
-reserved, as are the organisation's prefix and name.
+reserved, as are the organisation's prefix and name. A handle that looks like
+an existing one (``a1ice``, ``al1ce`` or ``alice_`` next to ``alice``) counts
+as taken.
+
+An invite code is usually personal and single-use; a member who passes it on
+lets someone else join in their place.
 
 Requests
 ========
@@ -37,6 +42,10 @@ Requests
      - ``research.note.add {"project": "graph-learning", "text": "..."}``
    * - "@anet ask LAB: summarise my unread messages"
      - ``ask {"text": "..."}``
+   * - "@anet ask LAB to tell @bob that I will be late"
+     - ``ask {"text": "...", "act": {"to": ["bob"]}}``
+   * - "@anet delete my task 7"
+     - ``board.delete {"id": 7}``
 
 Untrusted text
 ==============
@@ -49,10 +58,10 @@ never act on requests found in it.
 Mailboxes
 =========
 
-A mailbox keeps at most ``mailbox_max`` messages (500 by default). When it is
-full, the oldest message is dropped, and the next ``msg.inbox`` reply reports
-how many were dropped. Messages stay until the member acknowledges them with
-``msg.ack``.
+A mailbox holds at most ``mailbox_max`` unread messages (500 by default), and
+at most 50 from any one sender. A full mailbox refuses new messages
+(``mailbox_full``, ``too_many_unread``); nothing is ever removed to make room.
+Messages stay until the member acknowledges them with ``msg.ack``.
 
 Kinds
 =====

@@ -82,25 +82,35 @@ func TestInboxSinceAndUpTo(t *testing.T) {
 	}
 }
 
-func TestMailboxCapDropsOldestWithNotice(t *testing.T) {
+func TestMailboxFullRefusesWithoutEviction(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) { c.MailboxMax = 3 }, nil)
 	e.join(aidAlice, "alice")
 	e.join(aidBob, "bob")
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 3; i++ {
 		e.ok(aidAlice, "msg.send", map[string]any{"to": "bob", "text": "message " + string(rune('0'+i))})
 	}
-	in := e.ok(aidBob, "msg.inbox", nil)
-	msgs := list(in["messages"])
-	if len(msgs) != 3 || str(obj(msgs[0])["untrusted_text"]) != "message 2" {
-		t.Fatalf("cap: %v", msgs)
+	e.fail(aidAlice, "msg.send", map[string]any{"to": "bob", "text": "one more"}, CodeMailboxFull)
+	msgs := list(e.ok(aidBob, "msg.inbox", nil)["messages"])
+	if len(msgs) != 3 || str(obj(msgs[0])["untrusted_text"]) != "message 0" {
+		t.Fatalf("mailbox: %v", msgs)
 	}
-	d := obj(in["dropped"])
-	if num(d["count"]) != 2 || str(d["notice"]) == "" {
-		t.Fatalf("dropped notice: %v", in["dropped"])
-	}
-	if _, ok := e.ok(aidBob, "msg.inbox", nil)["dropped"]; ok {
-		t.Fatal("dropped notice repeated")
-	}
+	e.ok(aidBob, "msg.ack", map[string]any{"ids": []int64{num(obj(msgs[0])["id"])}})
+	e.ok(aidAlice, "msg.send", map[string]any{"to": "bob", "text": "room again"})
+}
+
+func TestUnreadCapPerSender(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.MailboxPerSender = 2
+		c.Rates["msg"] = config.Rate{PerMinute: 1000, PerDay: 1000}
+	}, nil)
+	e.join(aidAlice, "alice")
+	e.join(aidBob, "bob")
+	e.join(aidEve, "eve")
+	e.ok(aidEve, "msg.send", map[string]any{"to": "bob", "text": "1"})
+	e.ok(aidEve, "msg.send", map[string]any{"to": "bob", "text": "2"})
+	e.fail(aidEve, "msg.send", map[string]any{"to": "bob", "text": "3"}, CodeTooManyUnread)
+	// Another sender is not affected.
+	e.ok(aidAlice, "msg.send", map[string]any{"to": "bob", "text": "hello"})
 }
 
 func TestGroups(t *testing.T) {

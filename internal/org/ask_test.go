@@ -1,12 +1,14 @@
 package org
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ANetResearch/anet-org/internal/assistant"
 	"github.com/ANetResearch/anet-org/internal/config"
@@ -56,7 +58,7 @@ func TestAskNotConfigured(t *testing.T) {
 	e := newEnv(t, nil, nil)
 	e.join(aidAlice, "alice")
 	m := e.ok(aidAlice, "ask", map[string]any{"text": "hello"})
-	if m["configured"] != false || !contains(str(m["answer"]), "not configured") {
+	if m["configured"] != false || !contains(str(m["message"]), "not configured") {
 		t.Fatalf("ask: %v", m)
 	}
 	e.fail(aidAlice, "ask", map[string]any{"text": ""}, CodeMissingField)
@@ -72,10 +74,13 @@ func TestAskReadsOnlyCallersData(t *testing.T) {
 	e.ok(aidBob, "msg.send", map[string]any{"to": "alice", "text": "for alice only"})
 	e.ok(aidBob, "msg.send", map[string]any{"to": "carol", "text": "for carol only"})
 	m := e.ok(aidAlice, "ask", map[string]any{"text": "what is in my inbox?"})
-	if str(m["answer"]) != "You have one message from bob." || len(list(m["actions"])) != 0 {
+	if str(m["untrusted_answer"]) != "You have one message from bob." || len(list(m["actions"])) != 0 || str(m["notice"]) == "" {
 		t.Fatalf("ask: %v", m)
 	}
-	if strings.Contains(str(m["answer"]), "secret reasoning") {
+	if _, ok := m["answer"]; ok {
+		t.Fatal("answer outside untrusted_answer")
+	}
+	if strings.Contains(str(m["untrusted_answer"]), "secret reasoning") {
 		t.Fatal("reasoning_content leaked into the answer")
 	}
 	if num(obj(m["usage"])["tokens"]) != 80 {
@@ -109,9 +114,9 @@ func TestAskActSendsOnBehalf(t *testing.T) {
 	e := askEnv(t, sm, nil)
 	e.join(aidAlice, "alice")
 	e.join(aidBob, "bob")
-	m := e.ok(aidAlice, "ask", map[string]any{"text": "tell bob the meeting moves to 3 pm", "act": true})
+	m := e.ok(aidAlice, "ask", map[string]any{"text": "tell @bob the meeting moves to 3 pm", "act": true})
 	acts := list(m["actions"])
-	if len(acts) != 1 || str(obj(acts[0])["tool"]) != "send_message" {
+	if len(acts) != 1 || str(obj(acts[0])["tool"]) != "send_message" || str(obj(acts[0])["status"]) != "done" {
 		t.Fatalf("actions: %v", m)
 	}
 	in := list(e.ok(aidBob, "msg.inbox", nil)["messages"])
@@ -137,20 +142,27 @@ func TestAskWriteToolRefusedWithoutAct(t *testing.T) {
 }
 
 func TestAskBudgets(t *testing.T) {
-	member, global := int64(100), int64(150)
-	sm := &scriptedModel{replies: []string{answer("a", 120), answer("b", 40), answer("c", 40)}}
+	// Each call reserves about 1000 (max_output_tokens) plus half the prompt
+	// length before it is made, and settles to the reported usage.
+	member, global := int64(100500), int64(141000)
+	sm := &scriptedModel{replies: []string{answer("a", 100000), answer("b", 40000), answer("c", 40)}}
 	e := askEnv(t, sm, func(c *config.Config) {
 		c.Assistant.MemberDailyTokens = &member
 		c.Assistant.GlobalDailyTokens = &global
+		c.Assistant.MaxOutputTokens = 1000
 	})
 	e.join(aidAlice, "alice")
 	e.join(aidBob, "bob")
-	e.ok(aidAlice, "ask", map[string]any{"text": "1"}) // 120 used, over the member budget afterwards
+	e.ok(aidAlice, "ask", map[string]any{"text": "1"}) // 100000 used: the next reservation does not fit
 	e.fail(aidAlice, "ask", map[string]any{"text": "2"}, CodeBudgetExhausted)
-	e.ok(aidBob, "ask", map[string]any{"text": "3"}) // global 160 after this
+	e.ok(aidBob, "ask", map[string]any{"text": "3"}) // global 140000 after this
 	e.fail(aidBob, "ask", map[string]any{"text": "4"}, CodeBudgetExhausted)
+	b := &usageBudget{s: e.svc, aid: aidAlice}
+	if n, _ := b.used(context.Background(), globalUsageKey); n != 140000 {
+		t.Fatalf("global usage %d, want the settled 140000", n)
+	}
 	// A new UTC day resets both.
-	e.clk.add(24 * 60 * 60 * 1e9)
+	e.clk.add(24 * time.Hour)
 	e.ok(aidAlice, "ask", map[string]any{"text": "5"})
 
 	zero := int64(0)

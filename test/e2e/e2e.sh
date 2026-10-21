@@ -301,7 +301,7 @@ IFS='|' read -r st rs obs <<<"$(call alice msg.inbox '{}')"
   || fail "alice inbox: state=$st obs=$obs"
 
 IFS='|' read -r st rs obs <<<"$(call bob ask '{"text":"What is new for me?"}')"
-if [ "$st" = completed ] && printf '%s' "$obs" | grep -q 'The assistant answered through anet' && ! printf '%s' "$obs" | grep -q hidden; then
+if [ "$st" = completed ] && printf '%s' "$obs" | grep -q '"untrusted_answer":"The assistant answered through anet' && ! printf '%s' "$obs" | grep -q hidden; then
   pass "bob's ask was answered by the configured upstream (content only, no reasoning)"
 else
   fail "ask: state=$st reason=$rs obs=$obs"

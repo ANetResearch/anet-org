@@ -147,15 +147,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The token is checked before anything is routed, so an unauthenticated
+	// request learns nothing, not even the version.
+	if !s.tokenOK(r) {
+		refuse(&org.Error{Status: http.StatusUnauthorized, Code: org.CodeUnauthorized, Message: "Authentication failed."})
+		return
+	}
 	if r.Method == http.MethodGet && r.URL.Path == "/healthz" {
 		status = http.StatusOK
 		s.writeJSON(w, status, map[string]any{"status": "ok", "version": Version})
-		return
-	}
-	// The token is checked before anything is routed, so an unauthenticated
-	// request learns nothing about which capabilities exist.
-	if !s.tokenOK(r) {
-		refuse(&org.Error{Status: http.StatusUnauthorized, Code: org.CodeUnauthorized, Message: "Authentication failed."})
 		return
 	}
 	if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/") {

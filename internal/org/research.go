@@ -114,6 +114,9 @@ func (s *Service) projectCreate(ctx context.Context, c *call) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := s.checkQuota(ctx, c.member.AID, len(title)+len(desc)); err != nil {
+		return nil, err
+	}
 	var n int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects`).Scan(&n); err != nil {
 		return nil, s.internal("project.create", err)
@@ -214,6 +217,9 @@ func (s *Service) noteAdd(ctx context.Context, c *call) (any, error) {
 			return nil, errInvalid("url", "use an http or https URL.")
 		}
 	}
+	if err := s.checkQuota(ctx, c.member.AID, len(title)+len(body)+len(link)); err != nil {
+		return nil, err
+	}
 	if p.NoteCount >= maxNotesPerProj {
 		return nil, newErr(http.StatusConflict, CodeLimitReached, "The project has reached the limit of %d notes.", maxNotesPerProj)
 	}
@@ -302,4 +308,30 @@ func (s *Service) listNotes(ctx context.Context, m *Member, a noteListArgs) (map
 		out = append(out, v)
 	}
 	return map[string]any{"notice": untrustedNotice, "notes": out, "more": more}, rows.Err()
+}
+
+// noteDelete deletes a note; only its author may.
+func (s *Service) noteDelete(ctx context.Context, c *call) (any, error) {
+	var a deleteArgs
+	if err := decode(c.raw, &a); err != nil {
+		return nil, err
+	}
+	if a.ID <= 0 {
+		return nil, errMissing("id")
+	}
+	var author string
+	err := s.db.QueryRowContext(ctx, `SELECT author_aid FROM notes WHERE id = ?`, a.ID).Scan(&author)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, newErr(http.StatusNotFound, CodeNoteUnknown, "No research note has the id %d.", a.ID)
+	}
+	if err != nil {
+		return nil, s.internal("note.delete", err)
+	}
+	if author != c.member.AID {
+		return nil, errNotPermitted("the author of the note")
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM notes WHERE id = ? AND author_aid = ?`, a.ID, c.member.AID); err != nil {
+		return nil, s.internal("note.delete", err)
+	}
+	return map[string]any{"deleted": true, "id": a.ID}, nil
 }

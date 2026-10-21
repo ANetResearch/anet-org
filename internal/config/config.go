@@ -42,9 +42,22 @@ type Config struct {
 	// for admin.* and org.info only. Meant for tests; off by default.
 	AllowLocalAdmin bool `json:"allow_local_admin,omitempty"`
 
-	// MailboxMax is the number of messages a mailbox keeps; the oldest are
-	// dropped first.
+	// MailboxMax is the number of unread messages a mailbox holds. A full
+	// mailbox refuses new messages (mailbox_full); nothing is evicted.
 	MailboxMax int `json:"mailbox_max,omitempty"`
+	// MailboxPerSender bounds the unread messages one sender may have in one
+	// recipient's mailbox (too_many_unread).
+	MailboxPerSender int `json:"mailbox_per_sender,omitempty"`
+	// FailedJoinsPerCaller and FailedJoinsGlobal bound failed org.join
+	// attempts in a ten-minute window, per caller and for everyone.
+	FailedJoinsPerCaller int `json:"failed_joins_per_caller,omitempty"`
+	FailedJoinsGlobal    int `json:"failed_joins_global,omitempty"`
+	// GlobalDaily caps the calls of a family by all members together per UTC
+	// day: "msg" (msg.send) and "write" (board and research writes).
+	GlobalDaily map[string]int `json:"global_daily,omitempty"`
+	// MemberContentBytes bounds what one member has stored on the board and
+	// in the research space (titles, bodies, comments, notes).
+	MemberContentBytes int64 `json:"member_content_bytes,omitempty"`
 	// Rates overrides the per-member rate limits by capability family.
 	Rates map[string]Rate `json:"rates,omitempty"`
 	// JoinsPerMinutePerCode bounds joins with one code.
@@ -127,6 +140,10 @@ const (
 	DefaultModel             = "deepseek-v4-1-flash-261017"
 	DefaultMaxConcurrency    = 8
 	DefaultMailboxMax        = 500
+	DefaultMailboxPerSender  = 50
+	DefaultFailedJoinsCaller = 10
+	DefaultFailedJoinsGlobal = 300
+	DefaultContentBytes      = 5 << 20
 	DefaultJoinsPerCode      = 30
 	DefaultMaxConcurrent     = 64
 	DefaultMemberDailyTokens = 2_000_000
@@ -147,10 +164,14 @@ var DefaultRates = map[string]Rate{
 	"read":     {PerMinute: 120, PerDay: 5000},
 	"msg":      {PerMinute: 20, PerDay: 300},
 	"write":    {PerMinute: 30, PerDay: 1000},
+	"ack":      {PerMinute: 60, PerDay: 5000},
 	"ask":      {PerMinute: 6, PerDay: 100},
 	"admin":    {PerMinute: 60, PerDay: 2000},
 	"identity": {PerMinute: 10, PerDay: 50},
 }
+
+// DefaultGlobalDaily are the organisation-wide daily caps.
+var DefaultGlobalDaily = map[string]int{"msg": 20000, "write": 20000}
 
 // maxConfigBytes bounds the configuration file.
 const maxConfigBytes = 1 << 20
@@ -195,6 +216,20 @@ func (c *Config) applyDefaults() {
 	if c.MailboxMax <= 0 {
 		c.MailboxMax = DefaultMailboxMax
 	}
+	setDefault(&c.MailboxPerSender, DefaultMailboxPerSender)
+	setDefault(&c.FailedJoinsPerCaller, DefaultFailedJoinsCaller)
+	setDefault(&c.FailedJoinsGlobal, DefaultFailedJoinsGlobal)
+	if c.MemberContentBytes <= 0 {
+		c.MemberContentBytes = DefaultContentBytes
+	}
+	gd := map[string]int{}
+	for k, v := range DefaultGlobalDaily {
+		gd[k] = v
+	}
+	for k, v := range c.GlobalDaily {
+		gd[k] = v
+	}
+	c.GlobalDaily = gd
 	if c.JoinsPerMinutePerCode <= 0 {
 		c.JoinsPerMinutePerCode = DefaultJoinsPerCode
 	}
@@ -282,6 +317,17 @@ func (c *Config) check() error {
 			return fmt.Errorf("config: rates.%s: per_minute and per_day must be positive", k)
 		}
 	}
+	for k, v := range c.GlobalDaily {
+		if _, ok := DefaultGlobalDaily[k]; !ok {
+			return fmt.Errorf("config: global_daily: unknown family %q (msg or write)", k)
+		}
+		if v <= 0 {
+			return fmt.Errorf("config: global_daily.%s must be positive", k)
+		}
+	}
+	if c.MailboxPerSender > c.MailboxMax {
+		c.MailboxPerSender = c.MailboxMax
+	}
 	if c.MailboxMax > 100000 {
 		return errors.New("config: mailbox_max is above 100000")
 	}
@@ -360,7 +406,7 @@ func ExpandPath(raw string) (string, error) {
 
 // ReadSecret reads the first line of a secret file. The file must be a
 // regular file that other users cannot access, and the secret at least min
-// bytes without whitespace.
+// bytes without whitespace. Any group or other permission bit is refused.
 func ReadSecret(raw string, min int) (string, error) {
 	p, err := ExpandPath(raw)
 	if err != nil {
@@ -378,8 +424,8 @@ func ReadSecret(raw string, min int) (string, error) {
 	if !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("%s is not a regular file", p)
 	}
-	if fi.Mode().Perm()&0o007 != 0 {
-		return "", fmt.Errorf("%s is accessible to other users (mode %04o); chmod o-rwx", p, fi.Mode().Perm())
+	if fi.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("%s is accessible to its group or other users (mode %04o); chmod 0600", p, fi.Mode().Perm())
 	}
 	b, err := io.ReadAll(io.LimitReader(f, 4096))
 	if err != nil {

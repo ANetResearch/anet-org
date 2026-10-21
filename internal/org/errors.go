@@ -80,6 +80,11 @@ const (
 	CodeInvalidValue       = "invalid_value"
 	CodeLimitReached       = "limit_reached"
 	CodeAssistantOff       = "assistant_unavailable"
+	CodeMailboxFull        = "mailbox_full"
+	CodeTooManyUnread      = "too_many_unread"
+	CodeQuotaExceeded      = "quota_exceeded"
+	CodeNoteUnknown        = "note_unknown"
+	CodeForwardRefused     = "forward_refused"
 )
 
 func errCallerRequired() *Error {

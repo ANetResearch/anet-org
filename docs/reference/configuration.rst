@@ -28,8 +28,8 @@ Top-level keys
    always allowed.
 ``token_file`` (required)
    The bearer token the daemon presents; the same file as the node's
-   ``modules.service.token_file``. At least 16 bytes, not accessible to other
-   users.
+   ``modules.service.token_file``. At least 16 bytes, mode 0600 or stricter
+   (any group or other permission bit is refused, for API key files too).
 ``database`` (required)
    The SQLite file; created with mode 0600.
 ``admins``
@@ -40,7 +40,19 @@ Top-level keys
    Default ``false``. Treat calls without a caller as the operator for
    ``admin.*`` and ``org.info``. For tests.
 ``mailbox_max``
-   Default 500, at most 100000.
+   Unread messages a mailbox holds; default 500, at most 100000. A full
+   mailbox refuses new messages.
+``mailbox_per_sender``
+   Unread messages one sender may have in one mailbox; default 50.
+``failed_joins_per_caller``, ``failed_joins_global``
+   Failed ``org.join`` attempts in a ten-minute window, per caller (default 10)
+   and for everyone (default 300).
+``global_daily``
+   Organisation-wide calls per UTC day: ``{"msg": 20000, "write": 20000}`` by
+   default; ``msg`` is ``msg.send``, ``write`` the board and research writes.
+``member_content_bytes``
+   Bytes of board items, comments, projects and notes one member may store;
+   default 5 MiB (5242880).
 ``joins_per_minute_per_code``
    Default 30.
 ``max_concurrent``
@@ -71,7 +83,10 @@ Top-level keys
         - ``msg.send``
       * - ``write``
         - 30/min, 1000/day
-        - ``msg.ack``, ``board.*`` writes, ``research.*`` writes
+        - ``board.*`` writes, ``research.*`` writes
+      * - ``ack``
+        - 60/min, 5000/day
+        - ``msg.ack``
       * - ``ask``
         - 6/min, 100/day
         - ``ask``
@@ -91,7 +106,8 @@ Top-level keys
    defaults to ``deepseek-v4-1-flash-261017``; ``max_concurrency`` to 8. An
    empty list leaves the assistant unconfigured.
 ``member_daily_tokens``, ``global_daily_tokens``
-   Defaults 2,000,000 and 200,000,000; 0 is unlimited.
+   Defaults 2,000,000 and 200,000,000; 0 is unlimited. The global budget is
+   the primary cap; see :doc:`../topics/security`.
 ``max_steps``
    Model calls per ``ask``, default 6, at most 12.
 ``max_output_tokens``

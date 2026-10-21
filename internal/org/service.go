@@ -62,6 +62,9 @@ func New(cfg *config.Config, db *sql.DB, o Options) *Service {
 	s := &Service{cfg: cfg, db: db, now: o.Now, lim: ratelimit.New(o.Now),
 		admins: set(cfg.Admins), staff: set(cfg.Staff), asst: o.Assistant, log: o.Logger}
 	s.register()
+	if err := s.fillSkeletons(context.Background()); err != nil {
+		s.log.Error("cannot fill handle skeletons", "err", err.Error())
+	}
 	return s
 }
 
@@ -110,18 +113,20 @@ func (s *Service) register() {
 
 		"msg.send":  {"msg", memberOnly, s.msgSend},
 		"msg.inbox": {"read", memberOnly, s.msgInbox},
-		"msg.ack":   {"write", memberOnly, s.msgAck},
+		"msg.ack":   {"ack", memberOnly, s.msgAck},
 
 		"board.post":    {"write", memberOnly, s.boardPost},
 		"board.list":    {"read", memberOnly, s.boardList},
 		"board.claim":   {"write", memberOnly, s.boardClaim},
 		"board.done":    {"write", memberOnly, s.boardDone},
 		"board.comment": {"write", memberOnly, s.boardComment},
+		"board.delete":  {"write", memberOnly, s.boardDelete},
 
 		"research.project.create": {"write", memberOnly, s.projectCreate},
 		"research.project.list":   {"read", memberOnly, s.projectList},
 		"research.note.add":       {"write", memberOnly, s.noteAdd},
 		"research.note.list":      {"read", memberOnly, s.noteList},
+		"research.note.delete":    {"write", memberOnly, s.noteDelete},
 
 		"ask": {"ask", memberOnly, s.ask},
 
@@ -157,13 +162,12 @@ func (s *Service) Dispatch(ctx context.Context, id string, caller Caller, raw js
 	} else if caller.AID == "" {
 		return nil, errCallerRequired()
 	}
-	key := cp.family + "|" + caller.AID
+	who := caller.AID
 	if caller.Local {
-		key = cp.family + "|local"
+		who = "local"
 	}
-	r := s.cfg.Rates[cp.family]
-	if ok, retry := s.lim.Allow(key, r.PerMinute, r.PerDay); !ok {
-		return nil, errRate(retry)
+	if err := s.allowFamily(cp.family, who); err != nil {
+		return nil, err
 	}
 	c := &call{caller: caller, raw: raw}
 	if !caller.Local {
@@ -184,6 +188,23 @@ func (s *Service) Dispatch(ctx context.Context, id string, caller Caller, raw js
 		}
 	}
 	return cp.fn(ctx, c)
+}
+
+// allowFamily counts one call of a family for who against the member's
+// limits and, for the families with one, the organisation's daily cap.
+func (s *Service) allowFamily(family, who string) error {
+	r := s.cfg.Rates[family]
+	if ok, retry := s.lim.Allow(family+"|"+who, r.PerMinute, r.PerDay); !ok {
+		return errRate(retry)
+	}
+	if n := s.cfg.GlobalDaily[family]; n > 0 {
+		if ok, retry := s.lim.Allow("global|"+family, 0, n); !ok {
+			e := errRate(retry)
+			e.Message = "The organisation's daily limit for this kind of call was reached. It resets at 00:00 UTC."
+			return e
+		}
+	}
+	return nil
 }
 
 // decode reads the arguments into v strictly: unknown fields and wrong

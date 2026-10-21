@@ -149,12 +149,57 @@ func Open(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: migrate: %w", err)
+	}
 	if _, err := db.Exec(`INSERT INTO meta(key, value) VALUES('schema_version', ?)
 		ON CONFLICT(key) DO NOTHING`, fmt.Sprint(SchemaVersion)); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return db, nil
+}
+
+// migrate adds what later versions need to a database made by an earlier
+// one. Columns are added empty; the service fills them (org.New).
+func migrate(db *sql.DB) error {
+	for _, t := range []string{"members", "held_handles"} {
+		has, err := hasColumn(db, t, "skeleton")
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := db.Exec(`ALTER TABLE ` + t + ` ADD COLUMN skeleton TEXT NOT NULL DEFAULT ''`); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS members_skeleton ON members(skeleton);
+		CREATE INDEX IF NOT EXISTS held_skeleton ON held_handles(skeleton);
+		CREATE INDEX IF NOT EXISTS board_author ON board_items(author_aid);
+		CREATE INDEX IF NOT EXISTS comments_author ON board_comments(author_aid);
+		CREATE INDEX IF NOT EXISTS notes_author ON notes(author_aid);
+		CREATE INDEX IF NOT EXISTS messages_pair ON messages(to_aid, from_aid);`)
+	return err
+}
+
+func hasColumn(db *sql.DB, table, col string) (bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return false, err
+		}
+		if n == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // Backup writes a consistent copy of the database to dest with VACUUM INTO,

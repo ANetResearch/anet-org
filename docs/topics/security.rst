@@ -11,7 +11,9 @@ Identity
   account and ``peer_users``.
 * The bearer token from ``token_file`` is compared in constant time (both sides
   hashed first) before a request is routed. A request without it receives 401,
-  whatever its path, and learns nothing about the capabilities.
+  whatever its path (``/healthz`` included), and learns nothing about the
+  capabilities. Secret files (the token and API keys) must have no group or
+  other permission bits.
 * The caller is taken only from ``X-ANet-Caller``, which the anet daemon sets
   for callers it authenticated. A call without the header is refused with
   ``caller_required``. ``allow_local_admin`` admits such calls as the operator
@@ -28,9 +30,41 @@ Invite codes
 * Expiry is required (default 14 days, at most 90); uses default to 200; codes
   can be revoked, and revoking can remove the members who joined with the code
   after a given time.
-* At most 30 joins per minute per code, and at most 10 join attempts per minute
-  per caller, which bounds guessing.
-* A removed member can be banned from joining again.
+* At most 30 successful joins per minute per code. Failed joins do not count
+  against the code, so a member who knows a code cannot lock it for others by
+  failing on purpose. Failed joins are bounded instead: 10 per caller and 300
+  for everyone in a ten-minute window (``failed_joins_per_caller``,
+  ``failed_joins_global``), on top of 10 attempts per caller per minute. This
+  bounds guessing.
+* A removed member can be banned from joining again. An administrator's
+  removal releases the member's handle at once; a member who leaves keeps the
+  handle on hold for 30 days.
+* Each member records the invite it joined with (``anet-org admin member
+  list`` shows it), so revoking a leaked code can remove exactly the members
+  who joined with it after a given time.
+
+Sybil joins
+===========
+
+The organisation does not verify who is behind an identity: anyone can create
+anet identities, and a multi-use code admits as many of them as it has uses.
+Whoever holds a code with 200 uses can join up to 200 times under different
+handles. The limits in this program bound what those identities can do
+together, but do not prevent them:
+
+* the global daily assistant budget (``global_daily_tokens``) is the primary
+  cap on spending, whatever the number of members; the per-member budget only
+  divides it;
+* ``global_daily`` caps the messages (``msg``) and the board and research
+  writes (``write``) of all members together per UTC day;
+* each member's stored content is bounded (``member_content_bytes``).
+
+The recommendation is single-use codes, one per person, delivered privately:
+``anet-org admin invite create --count 60 --uses 1`` (or ``admin.invite.create``
+with ``"count": 60, "uses": 1``) prints 60 codes. A leaked single-use code
+admits one identity, and the record of which code each member used shows which
+one. Multi-use codes remain for open events, with short expiry and a use limit
+close to the expected attendance.
 
 Limits
 ======
@@ -40,17 +74,71 @@ Limits
 * Every text field has a size cap, and control characters are refused.
 * Per-member rate limits per capability family (``join``, ``identity``,
   ``read``, ``msg``, ``write``, ``ask``, ``admin``) answer ``rate_limited``.
-* Mailboxes keep at most ``mailbox_max`` messages, dropping the oldest with a
-  notice.
+* A mailbox holds at most ``mailbox_max`` unread messages, and one sender at
+  most ``mailbox_per_sender`` (50) of them. A full mailbox refuses new messages
+  (``mailbox_full``, ``too_many_unread``); nothing already in a mailbox is ever
+  evicted, so flooding cannot delete someone's mail.
+* Each member's stored board and research content is bounded by
+  ``member_content_bytes`` (5 MiB, ``quota_exceeded``); members can delete
+  their own board items (``board.delete``) and notes
+  (``research.note.delete``). A board text query scans only the newest 2000
+  items.
+* Handles are compared by skeleton as well: ``1``, ``l`` and ``i`` fold to
+  ``i``, ``0`` and ``o`` to ``o``, ``5`` and ``s`` to ``s``, and ``-`` and
+  ``_`` are dropped. ``a1ice``, ``al1ce`` and ``alice_`` count as taken while
+  ``alice`` exists, and the skeletons of the reserved words are reserved too.
 * A handle given up by renaming or leaving stays reserved for its former holder
   for 30 days, so nobody else can take it at once.
 
 Content
 =======
 
-* Text written by members is returned in ``untrusted_*`` fields with a notice.
+* Text written by members is returned in ``untrusted_*`` fields with a notice,
+  and so is the assistant's answer (``untrusted_answer``), which is derived
+  from such text.
+* ``gen-config`` declares ``discard`` for every capability that carries member
+  content (``org.join``, ``msg.*``, ``board.*``, ``research.*``, ``ask``): the
+  node clears the arguments and the result of a finished call and keeps only
+  the outcome and content identifiers in its evidence records. The trade-off:
+  the node's operator cannot inspect past calls, for debugging or abuse
+  cases, from the node; ``anet-org``'s own log (no content) and database remain.
+  Calls of the ``allow_only`` admin capabilities come from listed peers and
+  are not covered by ``discard``; the node keeps them under its normal
+  retention (``content_retention``), which includes created invite codes.
 * The log has one line per call: capability, caller AID, interaction id, HTTP
   status, code and duration. Arguments, replies and message text are never
   logged.
 * Top-level numbers of a reply become metrics in the node's evidence records;
   replies keep counts and identifiers there and nothing else.
+
+The assistant
+=============
+
+* Write tools exist only when the caller grants them. ``"act": {"to":
+  ["bob"], "post": true}`` allows exactly messages to those handles and board
+  posts; ``"act": true`` allows messages to the ``@handles`` written in the
+  caller's own ``text`` and a post when the text asks for one. The grant is
+  enforced in code, not in the prompt, so text the model reads cannot widen it.
+* A message or post that copies 41 or more bytes (after folding case and
+  white space) of member-written text returned by the tools in the same request
+  is refused (``forward_refused``), unless the caller wrote that text in the
+  request. Shorter fragments are not caught: the grant is the primary control.
+* Every attempted write, done or refused, is listed in ``actions``.
+* Budgets are reserved before each model call and settled to the reported
+  usage after it, atomically for the member and the organisation. The request
+  to the model runs under its own deadline, detached from the caller, so a
+  caller who cancels is still charged what the model used.
+
+Service units
+=============
+
+``anet-org.service`` runs with ``NoNewPrivileges=``,
+``RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6``,
+``SystemCallArchitectures=native`` and, through ``PrivateUsers=yes``, with
+``PrivateTmp=``, ``ProtectSystem=strict`` (writable: its state and runtime
+directories) and ``ProtectHostname=``. In a user manager the namespace settings
+need a user namespace; where the kernel or a security module refuses one,
+systemd leaves them without effect. The node's unit has the seccomp settings
+(with ``AF_NETLINK``, which the daemon needs to list addresses) but no
+``PrivateUsers=``: in a private user namespace root appears as nobody, and the
+node's service module would refuse the socket's path.

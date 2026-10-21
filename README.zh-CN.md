@@ -42,12 +42,14 @@ anet 本身不包含任何组织概念。`anet-org` 是一个独立程序，部�
 | `board.claim` | 成员 | `{"id", "release"?}` |
 | `board.done` | 成员 | `{"id", "note"?, "withdraw"?}` |
 | `board.comment` | 成员 | `{"id", "text"}` |
+| `board.delete` | 成员 | `{"id"}` |
 | `research.project.create` | 成员 | `{"name", "title"?, "description"?}` |
 | `research.project.list` | 成员 | `{"query"?, "limit"?}` |
 | `research.note.add` | 成员 | `{"project", "text", "kind"?: note、reading 或 minutes, "title"?, "url"?}` |
 | `research.note.list` | 成员 | `{"project"}` 或 `{"mine": true}`，可加 `"kind"?`、`"limit"?`、`"before"?` |
-| `ask` | 成员 | `{"text", "act"?}` |
-| `admin.invite.create` | 管理员 | `{"expires_days"?, "uses"?, "kind"?, "note"?}` |
+| `research.note.delete` | 成员 | `{"id"}` |
+| `ask` | 成员 | `{"text", "act"?: {"to": [昵称], "post": 布尔值} 或 true}` |
+| `admin.invite.create` | 管理员 | `{"count"?, "expires_days"?, "uses"?, "kind"?, "note"?}` |
 | `admin.invite.revoke` | 管理员 | `{"id", "remove_joined_after"?}` |
 | `admin.invite.list` | 管理员 | `{"all"?}` |
 | `admin.member.remove` | 管理员 | `{"handle", "ban"?}` |
@@ -115,14 +117,14 @@ anet 本身不包含任何组织概念。`anet-org` 是一个独立程序，部�
 
    按 AID 准入的 hub 会打印一行准入命令，交给 hub 运营者执行即可。注册时会一并登记公开能力；能力变更后需重新注册。
 
-7. **在主机上创建邀请码**：
+7. **在主机上创建邀请码**，每人一个一次性邀请码：
 
    ```sh
-   anet-org admin --config ~/.config/anet-org/anet-org.json invite create --uses 60 --note "Autumn intake"
+   anet-org admin --config ~/.config/anet-org/anet-org.json invite create --count 60 --uses 1 --note "Autumn intake"
    ```
 
-   邀请码只显示一次，数据库仅保存其哈希。发布邀请码时请同时公布节点的 AID（`anet status` 可查），以便成员的智能体
-   找到正确的节点，而不是 hub 上同名的其他节点。
+   每个邀请码只显示一次，数据库仅保存其哈希。发放邀请码时请同时告知节点的 AID（`anet status` 可查），以便成员的
+   智能体找到正确的节点，而不是 hub 上同名的其他节点。
 
 运维命令：`anet-org admin … invite list|revoke`、`member list|remove|kind`，以及用于生成数据库一致性副本的
 `anet-org backup <路径>`。
@@ -152,11 +154,20 @@ anet delegate <org-aid> --capability msg.inbox --args '{}'
 - 仅监听 Unix socket，权限 0600，并检查对端进程的 uid（`SO_PEERCRED`）。
 - 路由之前以常数时间比较 Bearer 令牌；身份只取自 `X-ANet-Caller`。
 - 邀请码：40 位随机数，以 SHA-256 哈希保存并以常数时间比较；必须设定有效期（默认 14 天，最长 90 天），
-  可限定使用次数、可撤销，每个邀请码每分钟最多 30 次加入。
-- 所有字段均有长度上限；按成员、按能力类别限速；信箱满时丢弃最早的消息并给出说明。
-- 助手的工具均限定于调用方本人：只读访问调用方自己的数据；仅当调用方以 `"act": true` 明确要求时，才会代为发送消息
-  或发布任务。不提供 shell、文件访问，也不访问所配置模型端点之外的网络。按成员与全局设定每日 token 预算。
+  可限定使用次数、可撤销；每个邀请码每分钟最多 30 次成功加入，失败的加入尝试按调用方与全局分别限量。
+  系统不核验身份，多次使用的邀请码可让同等数量的身份加入，因此建议为每人发放一次性邀请码
+  （`invite create --count N --uses 1`）。助手 token、消息与写入均设有全组织每日上限，约束大量身份的合计行为。
+- 昵称还按"骨架"判重：`a1ice`、`alice_` 与 `alice` 视为相同。
+- 所有字段均有长度上限；按成员、按能力类别限速；设有全组织每日上限与每位成员的存储配额；信箱满时拒收新消息，
+  不会删除已有消息。
+- 助手的工具均限定于调用方本人：只读访问调用方自己的数据；仅在调用方通过 `act` 授权的范围内（指定的收件人，
+  或请求中写明的 `@昵称`）代为发送消息或发布任务。将其他成员的文本复制进此类写入会被拒绝，答复放在
+  `untrusted_answer` 中。不提供 shell、文件访问，也不访问所配置模型端点之外的网络。每次调用模型前预扣 token
+  预算，事后按实际用量结算，即使调用方中途取消也照常计费。
+- 节点不保留携带成员内容的调用（`discard`）。
 - 日志只记录能力、调用方 AID、状态与代码，不记录参数或文本内容。
+
+详细说明及剩余风险见 [docs/topics/security.rst](docs/topics/security.rst)。
 
 ## 开发
 

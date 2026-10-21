@@ -192,6 +192,10 @@ type Completion struct {
 	ToolCalls []ToolCall
 	Usage     Usage
 	Upstream  string
+	// MaybeBilled is set on an error when an attempt may have been served
+	// and billed by an upstream without its usage reaching us (a timeout
+	// or a reply that broke off), so that a reserved budget is kept.
+	MaybeBilled bool
 }
 
 type chatRequest struct {
@@ -230,6 +234,8 @@ func (p *Pool) Complete(ctx context.Context, msgs []ChatMessage, tools []ToolSpe
 
 	deadline := p.now().Add(p.cfg.QueueWait)
 	tried := map[*upstream]bool{}
+	billed := false
+	fail := func(err error) (Completion, error) { return Completion{MaybeBilled: billed}, err }
 	for {
 		anyBusy := false
 		for _, u := range p.ups {
@@ -243,7 +249,8 @@ func (p *Pool) Complete(ctx context.Context, msgs []ChatMessage, tools []ToolSpe
 				continue
 			}
 			tried[u] = true
-			c, err := p.try(ctx, u, msgs, tools, maxTokens)
+			c, maybe, err := p.try(ctx, u, msgs, tools, maxTokens)
+			billed = billed || maybe
 			<-u.sem
 			select {
 			case p.freed <- struct{}{}:
@@ -252,24 +259,27 @@ func (p *Pool) Complete(ctx context.Context, msgs []ChatMessage, tools []ToolSpe
 			if err == nil {
 				return c, nil
 			}
-			if errors.Is(err, ErrRejected) || ctx.Err() != nil {
-				return Completion{}, err
+			if errors.Is(err, ErrRejected) {
+				return fail(err)
+			}
+			if ctx.Err() != nil {
+				return fail(ctx.Err())
 			}
 			// A failure that may be the upstream's: the next one is tried.
 		}
 		if !anyBusy {
-			return Completion{}, ErrUnavailable
+			return fail(ErrUnavailable)
 		}
 		wait := deadline.Sub(p.now())
 		if wait <= 0 {
 			p.log.Warn("assistant queue wait exceeded")
-			return Completion{}, ErrBusy
+			return fail(ErrBusy)
 		}
 		t := time.NewTimer(min(wait, 250*time.Millisecond))
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return Completion{}, ctx.Err()
+			return fail(ctx.Err())
 		case <-p.freed:
 			t.Stop()
 		case <-t.C:
@@ -332,29 +342,33 @@ func (p *Pool) markQuota(u *upstream, until time.Time) time.Duration {
 	return d
 }
 
-func (p *Pool) try(ctx context.Context, u *upstream, msgs []ChatMessage, tools []ToolSpec, maxTokens int) (Completion, error) {
+// try makes one request to u. maybeBilled reports a failure after which the
+// upstream may have served (and billed) the request.
+//
+// The request runs under its own deadline, detached from the caller's
+// context: a caller who gives up while the model works does not stop the
+// request, so its usage is still read and charged.
+func (p *Pool) try(ctx context.Context, u *upstream, msgs []ChatMessage, tools []ToolSpec, maxTokens int) (c Completion, maybeBilled bool, err error) {
 	body, err := json.Marshal(chatRequest{Model: u.Model, Messages: msgs, Tools: tools, MaxTokens: maxTokens})
 	if err != nil {
-		return Completion{}, err
+		return Completion{}, false, err
 	}
-	rctx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.cfg.Timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, http.MethodPost, u.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return Completion{}, err
+		return Completion{}, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+u.APIKey)
 	started := p.now()
 	resp, err := p.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return Completion{}, ctx.Err()
-		}
+		reason := transportReason(err)
 		d := p.markTransient(u, 0)
-		p.log.Warn("assistant upstream failed", "upstream", u.Name, "status", 0, "reason", transportReason(err),
+		p.log.Warn("assistant upstream failed", "upstream", u.Name, "status", 0, "reason", reason,
 			"cooldown_s", int(d.Seconds()), "ms", time.Since(started).Milliseconds())
-		return Completion{}, fmt.Errorf("upstream %s: transport error", u.Name)
+		return Completion{}, reason == "timeout", fmt.Errorf("upstream %s: transport error", u.Name)
 	}
 	defer resp.Body.Close()
 	raw, rerr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
@@ -371,12 +385,12 @@ func (p *Pool) try(ctx context.Context, u *upstream, msgs []ChatMessage, tools [
 			p.log.Warn("assistant upstream throttled", "upstream", u.Name, "status", 429, "code", code,
 				"cooldown_s", int(d.Seconds()), "ms", ms)
 		}
-		return Completion{}, fmt.Errorf("upstream %s: HTTP 429", u.Name)
+		return Completion{}, false, fmt.Errorf("upstream %s: HTTP 429", u.Name)
 	case resp.StatusCode >= 500:
 		d := p.markTransient(u, 0)
 		p.log.Warn("assistant upstream error", "upstream", u.Name, "status", resp.StatusCode,
 			"cooldown_s", int(d.Seconds()), "ms", ms)
-		return Completion{}, fmt.Errorf("upstream %s: HTTP %d", u.Name, resp.StatusCode)
+		return Completion{}, false, fmt.Errorf("upstream %s: HTTP %d", u.Name, resp.StatusCode)
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		// A key the upstream does not accept: this upstream is unusable for
 		// now, the next may not be.
@@ -384,32 +398,32 @@ func (p *Pool) try(ctx context.Context, u *upstream, msgs []ChatMessage, tools [
 		d := p.markQuota(u, time.Time{})
 		p.log.Error("assistant upstream refused the key", "upstream", u.Name, "status", resp.StatusCode, "code", code,
 			"cooldown_s", int(d.Seconds()))
-		return Completion{}, fmt.Errorf("upstream %s: HTTP %d", u.Name, resp.StatusCode)
+		return Completion{}, false, fmt.Errorf("upstream %s: HTTP %d", u.Name, resp.StatusCode)
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
 		code, _ := errorOf(raw)
 		p.log.Warn("assistant upstream rejected the request", "upstream", u.Name, "status", resp.StatusCode, "code", code, "ms", ms)
-		return Completion{}, fmt.Errorf("upstream %s: HTTP %d: %w", u.Name, resp.StatusCode, ErrRejected)
+		return Completion{}, false, fmt.Errorf("upstream %s: HTTP %d: %w", u.Name, resp.StatusCode, ErrRejected)
 	}
 	if rerr != nil {
 		d := p.markTransient(u, 0)
 		p.log.Warn("assistant upstream reply broke off", "upstream", u.Name, "status", resp.StatusCode, "cooldown_s", int(d.Seconds()))
-		return Completion{}, fmt.Errorf("upstream %s: reply broke off", u.Name)
+		return Completion{}, true, fmt.Errorf("upstream %s: reply broke off", u.Name)
 	}
 	var cr chatResponse
 	if err := json.Unmarshal(raw, &cr); err != nil || len(cr.Choices) == 0 {
 		d := p.markTransient(u, 0)
 		p.log.Warn("assistant upstream reply unreadable", "upstream", u.Name, "status", resp.StatusCode, "cooldown_s", int(d.Seconds()))
-		return Completion{}, fmt.Errorf("upstream %s: unreadable reply", u.Name)
+		return Completion{}, true, fmt.Errorf("upstream %s: unreadable reply", u.Name)
 	}
 	p.markOK(u)
 	m := cr.Choices[0].Message
-	c := Completion{ToolCalls: m.ToolCalls, Usage: cr.Usage, Upstream: u.Name}
+	c = Completion{ToolCalls: m.ToolCalls, Usage: cr.Usage, Upstream: u.Name}
 	if m.Content != nil {
 		c.Content = *m.Content
 	}
 	p.log.Info("assistant upstream answered", "upstream", u.Name, "status", resp.StatusCode, "ms", ms,
 		"tokens", cr.Usage.Tokens(), "tool_calls", len(m.ToolCalls))
-	return c, nil
+	return c, false, nil
 }
 
 func transportReason(err error) string {

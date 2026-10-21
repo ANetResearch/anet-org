@@ -23,7 +23,8 @@ Slice=anet-org.slice
 ExecStart=%h/.local/bin/anet-org serve --config %E/anet-org/anet-org.json
 RuntimeDirectory=anet-org
 RuntimeDirectoryMode=0700
-ExecStartPre=/bin/mkdir -p -m 0700 %h/.local/state/anet-org
+# "+": created outside the sandbox below, before ReadWritePaths= needs it.
+ExecStartPre=+/bin/mkdir -p -m 0700 %h/.local/state/anet-org
 Restart=on-failure
 RestartSec=3s
 UMask=0077
@@ -31,6 +32,21 @@ NoNewPrivileges=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
+# Seccomp filters work in any user manager.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+# The namespace settings below need a user namespace in a user unit
+# (systemd.exec(5), "Sandboxing": they "will work when used in conjunction
+# with PrivateUsers=true"); where the kernel or a security module refuses
+# unprivileged user namespaces, systemd leaves them without effect and the
+# service still starts. Inside, root and other accounts appear as nobody:
+# anet-org checks no file owners, so this is harmless here (the node unit
+# cannot use it; see there).
+PrivateUsers=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHostname=yes
+ReadWritePaths=-%h/.local/state/anet-org %t/anet-org
 CPUQuota=300%
 MemoryMax=3G
 TasksMax=256

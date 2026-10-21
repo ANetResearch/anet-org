@@ -95,7 +95,17 @@ func (s *Service) send(ctx context.Context, from *Member, a sendArgs) (map[strin
 	}
 	defer tx.Rollback()
 	ids := make([]int64, 0, len(recipients))
+	delivered := 0
+	var refusal *Error
 	for _, r := range recipients {
+		// Nothing already in a mailbox is ever evicted: a full mailbox, or
+		// too many unread messages from this sender, refuses the new one.
+		if e, err := s.roomFor(ctx, tx, from.AID, r); err != nil {
+			return nil, err
+		} else if e != nil {
+			refusal = e
+			continue
+		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO messages(to_aid, from_aid, from_handle, via_group, text, sent_at)
 			VALUES(?, ?, ?, ?, ?, ?)`, r.AID, from.AID, from.Handle, group, body, now)
 		if err != nil {
@@ -103,16 +113,18 @@ func (s *Service) send(ctx context.Context, from *Member, a sendArgs) (map[strin
 		}
 		id, _ := res.LastInsertId()
 		ids = append(ids, id)
-		if err := s.trimMailbox(ctx, tx, r.AID); err != nil {
-			return nil, err
-		}
+		delivered++
+	}
+	if delivered == 0 {
+		return nil, refusal
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, s.internal("send", err)
 	}
-	out := map[string]any{"sent": true, "recipients": len(recipients)}
+	out := map[string]any{"sent": true, "recipients": delivered}
 	if group != "" {
 		out["to"] = "group:" + group
+		out["skipped_full_mailboxes"] = len(recipients) - delivered
 	} else {
 		out["to"] = recipients[0].Handle
 		out["message_id"] = ids[0]
@@ -120,25 +132,24 @@ func (s *Service) send(ctx context.Context, from *Member, a sendArgs) (map[strin
 	return out, nil
 }
 
-// trimMailbox drops the oldest messages beyond the mailbox limit and counts
-// them, so the owner is told at the next inbox read.
-func (s *Service) trimMailbox(ctx context.Context, tx *sql.Tx, aid string) error {
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_aid = ?`, aid).Scan(&n); err != nil {
-		return s.internal("trim", err)
+// roomFor returns a refusal when r's mailbox cannot take another message
+// from the sender: the mailbox holds MailboxMax unread messages, or the
+// sender already has MailboxPerSender unread messages in it.
+func (s *Service) roomFor(ctx context.Context, tx *sql.Tx, sender string, r *Member) (*Error, error) {
+	var total, mine int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(from_aid = ?), 0) FROM messages WHERE to_aid = ?`,
+		sender, r.AID).Scan(&total, &mine); err != nil {
+		return nil, s.internal("send", err)
 	}
-	over := n - s.cfg.MailboxMax
-	if over <= 0 {
-		return nil
+	if total >= s.cfg.MailboxMax {
+		return newErr(http.StatusConflict, CodeMailboxFull,
+			"The mailbox of %s is full. The message was not stored; nothing was removed from the mailbox.", r.Handle), nil
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id IN
-		(SELECT id FROM messages WHERE to_aid = ? ORDER BY id ASC LIMIT ?)`, aid, over); err != nil {
-		return s.internal("trim", err)
+	if mine >= s.cfg.MailboxPerSender {
+		return newErr(http.StatusConflict, CodeTooManyUnread,
+			"%s has %d unread messages from the caller. Wait until they are read.", r.Handle, mine), nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE members SET mailbox_dropped = mailbox_dropped + ? WHERE aid = ?`, over, aid); err != nil {
-		return s.internal("trim", err)
-	}
-	return nil
+	return nil, nil
 }
 
 type inboxArgs struct {
@@ -162,12 +173,12 @@ func (s *Service) msgInbox(ctx context.Context, c *call) (any, error) {
 	if err := decode(c.raw, &a); err != nil {
 		return nil, err
 	}
-	return s.inbox(ctx, c.member, a, true)
+	return s.inbox(ctx, c.member, a)
 }
 
 // inbox lists the member's mailbox, oldest first. since is a message id
 // (only later ids) or an RFC 3339 time (only messages sent at or after it).
-func (s *Service) inbox(ctx context.Context, m *Member, a inboxArgs, clearDropped bool) (map[string]any, error) {
+func (s *Service) inbox(ctx context.Context, m *Member, a inboxArgs) (map[string]any, error) {
 	var sinceID, sinceTime int64
 	if raw := strings.TrimSpace(string(a.Since)); raw != "" && raw != "null" {
 		var id int64
@@ -235,17 +246,6 @@ func (s *Service) inbox(ctx context.Context, m *Member, a inboxArgs, clearDroppe
 		"messages": out,
 		"more":     more,
 		"mailbox":  map[string]any{"messages": total, "limit": s.cfg.MailboxMax},
-	}
-	if m.Dropped > 0 {
-		res["dropped"] = map[string]any{
-			"count":  m.Dropped,
-			"notice": "Older messages were removed because the mailbox reached its limit. Acknowledge messages with msg.ack to keep room.",
-		}
-		if clearDropped {
-			if _, err := s.db.ExecContext(ctx, `UPDATE members SET mailbox_dropped = 0 WHERE aid = ?`, m.AID); err != nil {
-				return nil, s.internal("inbox", err)
-			}
-		}
 	}
 	return res, nil
 }

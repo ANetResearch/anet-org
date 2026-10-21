@@ -15,7 +15,7 @@ After=anet-org.service network-online.target
 [Service]
 Type=simple
 Slice=anet-org.slice
-# Explicit paths: before systemd 251, %S and StateDirectory= of a user unit
+# Explicit paths: on older systemd (249 observed), %S and StateDirectory= of a user unit
 # name $XDG_CONFIG_HOME, not $XDG_STATE_HOME.
 Environment=ANET_DATA_DIR=%h/.local/state/anet-org-node
 ExecStartPre=/bin/mkdir -p -m 0700 %h/.local/state/anet-org-node
@@ -27,6 +27,14 @@ NoNewPrivileges=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
+# AF_NETLINK: the daemon lists the host's addresses (net.InterfaceAddrs).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+# No PrivateUsers=, and so none of the namespace settings that need it in a
+# user unit (PrivateTmp=, ProtectSystem=, ProtectHostname=): in a private
+# user namespace root appears as nobody, and the service module refuses a
+# socket whose path it then cannot attribute to root (/run/user is root's).
+# No ProtectSystem= also leaves `anet update` able to replace the binary.
 CPUQuota=200%
 MemoryMax=2G
 TasksMax=256

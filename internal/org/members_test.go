@@ -18,7 +18,7 @@ func TestInfoForAnyone(t *testing.T) {
 	if obj(m["caller"])["member"] != false {
 		t.Fatal("stranger shown as member")
 	}
-	if len(list(m["capabilities"])) != 23 {
+	if len(list(m["capabilities"])) != 25 {
 		t.Fatalf("capabilities: %v", m["capabilities"])
 	}
 	e.join(aidAlice, "alice")
@@ -132,7 +132,10 @@ func TestJoinAttemptsPerCallerLimited(t *testing.T) {
 }
 
 func TestHandleRules(t *testing.T) {
-	e := newEnv(t, func(c *config.Config) { c.Rates["join"] = config.Rate{PerMinute: 1000, PerDay: 1000} }, nil)
+	e := newEnv(t, func(c *config.Config) {
+		c.Rates["join"] = config.Rate{PerMinute: 1000, PerDay: 1000}
+		c.FailedJoinsPerCaller = 1000
+	}, nil)
 	code := e.invite(InviteOptions{})
 	for _, h := range []string{"a", "1abc", "ab cd", "ab!c", "x" + strings.Repeat("y", 24), "aliсe", "_abc", ""} {
 		_, err := e.call(aidAlice, "org.join", map[string]any{"code": code, "handle": h})
@@ -194,7 +197,7 @@ func TestNonMemberRefused(t *testing.T) {
 	e := newEnv(t, nil, nil)
 	for _, c := range []string{"org.me", "org.leave", "org.rename", "org.members", "msg.send", "msg.inbox", "msg.ack",
 		"board.post", "board.list", "board.claim", "board.done", "board.comment", "research.project.create",
-		"research.project.list", "research.note.add", "research.note.list", "ask"} {
+		"research.project.list", "research.note.add", "research.note.list", "ask", "board.delete", "research.note.delete"} {
 		e.fail(aidEve, c, nil, CodeNotAMember)
 	}
 }

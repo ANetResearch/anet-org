@@ -27,9 +27,34 @@ Acknowledging deletes
    ``msg.ack`` removes messages. A mailbox holds what has not been read, and a
    deleted message cannot leak later.
 
+Full mailboxes refuse, never evict
+   A full mailbox refuses new messages, and one sender can fill at most 50
+   places in another member's mailbox. Evicting the oldest message would let a
+   flood delete someone's mail.
+
 Handles on hold
    A handle released by renaming or leaving is held for its former holder for
-   30 days, so nobody can take a known name at once.
+   30 days, so nobody can take a known name at once. An administrator's removal
+   releases it at once: a removed member has no claim to the name.
+
+Handle skeletons
+   Look-alike handles are refused by comparing skeletons (``1``/``l``/``i``,
+   ``0``/``o``, ``5``/``s`` folded; ``-`` and ``_`` dropped). This also refuses
+   some unrelated pairs (``ilan`` and ``lian``); the member chooses another
+   handle.
+
+No identity verification
+   The owner chose not to verify identities. Multi-use codes stay available;
+   bulk single-use codes are the recommendation, and the global daily caps
+   bound what many identities can do together (:doc:`../topics/security`).
+
+Failed joins do not charge the code
+   The per-code limit counts successful joins only, and failed joins are
+   limited per caller and globally, so knowing a code is not enough to lock it.
+
+Content discarded on the node
+   ``gen-config`` declares ``discard`` for the capabilities that carry member
+   content; ``anet-org``'s database is the only copy.
 
 Banning
    ``admin.member.remove`` can ban the AID. A new identity is a new AID and
@@ -39,21 +64,31 @@ Research space
    Projects are visible to all members; notes have a kind (``note``,
    ``reading``, ``minutes``) that covers reading lists and meeting minutes.
 
-The assistant acts only with ``act``
-   Write tools are offered to the model only when the caller passes
-   ``"act": true``, so text in a mailbox or on the board cannot make the
-   assistant send messages for a member who only asked to read.
+The assistant acts only within the caller's grant
+   Write tools are offered only for what ``act`` grants: explicit recipients
+   and posting, or with ``"act": true`` the ``@handles`` and the post request
+   in the caller's own text. Copying member-written tool output into a write is
+   refused. The answer is returned as ``untrusted_answer``.
 
-Budgets count total tokens
+Budgets count total tokens and are reserved first
    The budget is charged with ``usage.total_tokens`` (prompt and completion,
-   including reasoning), the closest figure to what the upstream bills.
+   including reasoning), the closest figure to what the upstream bills. Each
+   model call first reserves half a token per prompt character plus
+   ``max_output_tokens``, and is then settled to the reported usage; a call
+   that may have been served without a usage report (a timeout, a broken
+   reply) keeps its reservation. The global budget is the primary cap.
 
 Upstream reset times
    A quota error that states a reset time without a zone is read as UTC+8.
 
 Rate limits in memory
-   Per-member rate counters are in memory and restart with the program. The
-   daemon's own per-caller quotas persist across restarts of ``anet-org``.
+   Per-member rate counters, the organisation-wide daily caps on messages and
+   writes, and the failed-join counters are in memory and restart with the
+   program. The daemon's own per-caller quotas persist across restarts of
+   ``anet-org``, and the assistant's token usage is in the database.
+
+``/healthz`` needs the token
+   Without the token the server tells nothing, not even its version.
 
 One database connection
    SQLite is opened with WAL and one connection. Statements are serialised,
