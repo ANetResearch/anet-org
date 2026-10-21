@@ -8,7 +8,6 @@ Description=Back up the anet-org database
 [Service]
 Type=oneshot
 Slice=anet-org.slice
-StateDirectory=anet-org/backups
-StateDirectoryMode=0700
+ExecStartPre=/bin/mkdir -p -m 0700 %h/.local/state/anet-org/backups
 UMask=0077
-ExecStart=/bin/sh -c 'exec %h/.local/bin/anet-org backup --config %E/anet-org/anet-org.json --replace "%S/anet-org/backups/org-$(date -u +%%a).db"'
+ExecStart=/bin/sh -c 'exec %h/.local/bin/anet-org backup --config %E/anet-org/anet-org.json --replace "%h/.local/state/anet-org/backups/org-$(date -u +%%a).db"'

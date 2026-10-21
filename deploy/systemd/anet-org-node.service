@@ -15,9 +15,10 @@ After=anet-org.service network-online.target
 [Service]
 Type=simple
 Slice=anet-org.slice
-Environment=ANET_DATA_DIR=%S/anet-org-node
-StateDirectory=anet-org-node
-StateDirectoryMode=0700
+# Explicit paths: before systemd 251, %S and StateDirectory= of a user unit
+# name $XDG_CONFIG_HOME, not $XDG_STATE_HOME.
+Environment=ANET_DATA_DIR=%h/.local/state/anet-org-node
+ExecStartPre=/bin/mkdir -p -m 0700 %h/.local/state/anet-org-node
 ExecStart=%h/.local/bin/anet daemon
 Restart=on-failure
 RestartSec=5s
