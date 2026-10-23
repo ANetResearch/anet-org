@@ -30,6 +30,7 @@ var noteKinds = map[string]bool{"note": true, "reading": true, "minutes": true}
 type ProjectView struct {
 	Name                 string `json:"name"`
 	Owner                string `json:"owner"`
+	Via                  string `json:"via,omitempty"`
 	CreatedAt            string `json:"created_at"`
 	NoteCount            int    `json:"note_count"`
 	UntrustedTitle       string `json:"untrusted_title"`
@@ -43,6 +44,7 @@ type NoteView struct {
 	Project        string `json:"project"`
 	Kind           string `json:"kind"`
 	Author         string `json:"author"`
+	Via            string `json:"via,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	UntrustedTitle string `json:"untrusted_title,omitempty"`
 	UntrustedText  string `json:"untrusted_text"`
@@ -50,15 +52,17 @@ type NoteView struct {
 }
 
 const projectSelect = `SELECT p.id, p.name, COALESCE(m.handle, ''), p.created_at, p.title, p.description,
-	(SELECT COUNT(*) FROM notes n WHERE n.project_id = p.id)
+	(SELECT COUNT(*) FROM notes n WHERE n.project_id = p.id), p.via
 	FROM projects p LEFT JOIN members m ON m.aid = p.owner_aid`
 
 func scanProject(sc interface{ Scan(...any) error }) (*ProjectView, error) {
 	var v ProjectView
 	var at int64
-	if err := sc.Scan(&v.id, &v.Name, &v.Owner, &at, &v.UntrustedTitle, &v.UntrustedDescription, &v.NoteCount); err != nil {
+	var via string
+	if err := sc.Scan(&v.id, &v.Name, &v.Owner, &at, &v.UntrustedTitle, &v.UntrustedDescription, &v.NoteCount, &via); err != nil {
 		return nil, err
 	}
+	v.Via = shownVia(via)
 	if v.Owner == "" {
 		v.Owner = formerMember
 	}
@@ -124,8 +128,8 @@ func (s *Service) projectCreate(ctx context.Context, c *call) (any, error) {
 	if n >= maxProjects {
 		return nil, newErr(http.StatusConflict, CodeLimitReached, "The organisation has reached the limit of %d projects.", maxProjects)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO projects(name, title, description, owner_aid, created_at) VALUES(?, ?, ?, ?, ?)`,
-		name, title, desc, c.member.AID, s.now().Unix()); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO projects(name, title, description, owner_aid, created_at, via) VALUES(?, ?, ?, ?, ?, ?)`,
+		name, title, desc, c.member.AID, s.now().Unix(), c.via()); err != nil {
 		if isUnique(err) {
 			return nil, newErr(http.StatusConflict, CodeProjectExists, "A research project named %q exists.", name)
 		}
@@ -224,14 +228,14 @@ func (s *Service) noteAdd(ctx context.Context, c *call) (any, error) {
 		return nil, newErr(http.StatusConflict, CodeLimitReached, "The project has reached the limit of %d notes.", maxNotesPerProj)
 	}
 	now := s.now().Unix()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO notes(project_id, author_aid, kind, title, text, url, created_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)`, p.id, c.member.AID, kind, title, body, link, now)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO notes(project_id, author_aid, kind, title, text, url, created_at, via)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, p.id, c.member.AID, kind, title, body, link, now, c.via())
 	if err != nil {
 		return nil, s.internal("note.add", err)
 	}
 	id, _ := res.LastInsertId()
 	return map[string]any{"note": NoteView{ID: id, Project: p.Name, Kind: kind, Author: c.member.Handle,
-		CreatedAt: ts(now), UntrustedTitle: title, UntrustedText: body, UntrustedURL: link}}, nil
+		Via: shownVia(c.via()), CreatedAt: ts(now), UntrustedTitle: title, UntrustedText: body, UntrustedURL: link}}, nil
 }
 
 type noteListArgs struct {
@@ -282,7 +286,7 @@ func (s *Service) listNotes(ctx context.Context, m *Member, a noteListArgs) (map
 	}
 	n := limit(a.Limit, 30, 100)
 	args = append(args, n+1)
-	rows, err := s.db.QueryContext(ctx, `SELECT n.id, p.name, n.kind, COALESCE(mm.handle, ''), n.created_at, n.title, n.text, n.url
+	rows, err := s.db.QueryContext(ctx, `SELECT n.id, p.name, n.kind, COALESCE(mm.handle, ''), n.created_at, n.title, n.text, n.url, n.via
 		FROM notes n JOIN projects p ON p.id = n.project_id LEFT JOIN members mm ON mm.aid = n.author_aid
 		WHERE `+strings.Join(where, " AND ")+` ORDER BY n.id DESC LIMIT ?`, args...)
 	if err != nil {
@@ -294,9 +298,11 @@ func (s *Service) listNotes(ctx context.Context, m *Member, a noteListArgs) (map
 	for rows.Next() {
 		var v NoteView
 		var at int64
-		if err := rows.Scan(&v.ID, &v.Project, &v.Kind, &v.Author, &at, &v.UntrustedTitle, &v.UntrustedText, &v.UntrustedURL); err != nil {
+		var via string
+		if err := rows.Scan(&v.ID, &v.Project, &v.Kind, &v.Author, &at, &v.UntrustedTitle, &v.UntrustedText, &v.UntrustedURL, &via); err != nil {
 			return nil, s.internal("note.list", err)
 		}
+		v.Via = shownVia(via)
 		if len(out) == n {
 			more = true
 			break

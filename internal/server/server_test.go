@@ -110,6 +110,10 @@ func TestRoutingAndBody(t *testing.T) {
 		{"POST", "/v1/org.join", strings.Repeat(" ", MaxBodyBytes+1), nil, 400, "too_long"},
 		{"POST", "/v1/msg.inbox", "{}", nil, 403, "not_a_member"},
 		{"POST", "/v1/org.join", `{"code":"LAB-0000-0000","handle":"eve"}`, nil, 404, "invite_unknown"},
+		{"POST", "/v1/org.join", `{"code":"LAB-0000-0000","handle":"eve"}`, map[string]string{HeaderVia: "agent"}, 403, "agent_not_permitted"},
+		{"POST", "/v1/org.info", "{}", map[string]string{HeaderVia: "robot"}, 400, "bad_via"},
+		{"POST", "/v1/org.admit", "{}", map[string]string{HeaderVia: "agent"}, 403, "agent_not_permitted"},
+		{"POST", "/v1/ask", `{"text":"hello"}`, nil, 403, "not_a_member"},
 	}
 	for _, c := range cases {
 		code, m, _ := do(t, s, c.method, c.path, bearer, eve, c.body, c.hdr)
@@ -120,12 +124,20 @@ func TestRoutingAndBody(t *testing.T) {
 			t.Errorf("%s: status %d loses the code", c.path, code)
 		}
 	}
+	code, m, _ := do(t, s, "POST", "/v1/org.admit", bearer, eve, "{}", nil)
+	if code != 200 || len(m) != 1 || m["admit"] != false {
+		t.Fatalf("org.admit for a stranger: %d %v", code, m)
+	}
+	code, m, _ = do(t, s, "POST", "/v1/org.info", bearer, eve, "{}", map[string]string{HeaderVia: "agent"})
+	if code != 200 || m["name"] != "Example Lab" {
+		t.Fatalf("org.info via agent: %d %v", code, m)
+	}
 	// Empty body is an empty object.
-	code, _, _ := do(t, s, "POST", "/v1/org.info", bearer, eve, "", nil)
+	code, _, _ = do(t, s, "POST", "/v1/org.info", bearer, eve, "", nil)
 	if code != 200 {
 		t.Fatalf("empty body: %d", code)
 	}
-	code, m, _ := do(t, s, "GET", "/healthz", "", "", "", nil)
+	code, m, _ = do(t, s, "GET", "/healthz", "", "", "", nil)
 	if code != 401 {
 		t.Fatalf("healthz without the token: %d %v", code, m)
 	}

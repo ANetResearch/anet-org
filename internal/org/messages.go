@@ -31,11 +31,12 @@ func (s *Service) msgSend(ctx context.Context, c *call) (any, error) {
 	if err := decode(c.raw, &a); err != nil {
 		return nil, err
 	}
-	return s.send(ctx, c.member, a)
+	return s.send(ctx, c.member, a, c.via())
 }
 
-// send stores a message in each recipient's mailbox.
-func (s *Service) send(ctx context.Context, from *Member, a sendArgs) (map[string]any, error) {
+// send stores a message in each recipient's mailbox, with via as the
+// caller's via value.
+func (s *Service) send(ctx context.Context, from *Member, a sendArgs, via string) (map[string]any, error) {
 	to := normalizeHandle(a.To)
 	if to == "" {
 		return nil, errMissing("to")
@@ -106,8 +107,8 @@ func (s *Service) send(ctx context.Context, from *Member, a sendArgs) (map[strin
 			refusal = e
 			continue
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO messages(to_aid, from_aid, from_handle, via_group, text, sent_at)
-			VALUES(?, ?, ?, ?, ?, ?)`, r.AID, from.AID, from.Handle, group, body, now)
+		res, err := tx.ExecContext(ctx, `INSERT INTO messages(to_aid, from_aid, from_handle, via_group, text, sent_at, via)
+			VALUES(?, ?, ?, ?, ?, ?, ?)`, r.AID, from.AID, from.Handle, group, body, now, via)
 		if err != nil {
 			return nil, s.internal("send", err)
 		}
@@ -122,6 +123,9 @@ func (s *Service) send(ctx context.Context, from *Member, a sendArgs) (map[strin
 		return nil, s.internal("send", err)
 	}
 	out := map[string]any{"sent": true, "recipients": delivered}
+	if v := shownVia(via); v != "" {
+		out["via"] = v
+	}
 	if group != "" {
 		out["to"] = "group:" + group
 		out["skipped_full_mailboxes"] = len(recipients) - delivered
@@ -158,12 +162,16 @@ type inboxArgs struct {
 }
 
 // InboxMessage is one message as its recipient reads it. The text is in
-// untrusted_text: it was written by another member.
+// untrusted_text: it was written by another member. Via is set when the
+// organisation's agent sent it for the sender. A notification of the task
+// board comes from "board" with from_kind notification and names the item.
 type InboxMessage struct {
 	ID            int64  `json:"id"`
 	From          string `json:"from"`
 	FromKind      string `json:"from_kind"`
 	ViaGroup      string `json:"via_group,omitempty"`
+	Via           string `json:"via,omitempty"`
+	BoardItem     int64  `json:"board_item,omitempty"`
 	SentAt        string `json:"sent_at"`
 	UntrustedText string `json:"untrusted_text"`
 }
@@ -201,7 +209,7 @@ func (s *Service) inbox(ctx context.Context, m *Member, a inboxArgs) (map[string
 	}
 	n := limit(a.Limit, 50, 200)
 	rows, err := s.db.QueryContext(ctx, `SELECT msg.id, COALESCE(fm.handle, msg.from_handle), COALESCE(fm.kind, ''),
-		fm.aid, msg.via_group, msg.sent_at, msg.text
+		fm.aid, msg.from_aid, msg.via_group, msg.via, COALESCE(msg.item_id, 0), msg.sent_at, msg.text
 		FROM messages msg LEFT JOIN members fm ON fm.aid = msg.from_aid
 		WHERE msg.to_aid = ? AND msg.id > ? AND msg.sent_at >= ? ORDER BY msg.id ASC LIMIT ?`,
 		m.AID, sinceID, sinceTime, n+1)
@@ -215,17 +223,22 @@ func (s *Service) inbox(ctx context.Context, m *Member, a inboxArgs) (map[string
 		var im InboxMessage
 		var kind string
 		var fromAID sql.NullString
+		var sender, via string
 		var sent int64
-		if err := rows.Scan(&im.ID, &im.From, &kind, &fromAID, &im.ViaGroup, &sent, &im.UntrustedText); err != nil {
+		if err := rows.Scan(&im.ID, &im.From, &kind, &fromAID, &sender, &im.ViaGroup, &via, &im.BoardItem, &sent, &im.UntrustedText); err != nil {
 			return nil, s.internal("inbox", err)
 		}
 		if len(out) == n {
 			more = true
 			break
 		}
-		if fromAID.Valid {
+		im.Via = shownVia(via)
+		switch {
+		case sender == boardSender:
+			im.FromKind = "notification"
+		case fromAID.Valid:
 			im.FromKind = s.kindOf(&Member{AID: fromAID.String, Kind: kind})
-		} else {
+		default:
 			im.FromKind = "former_member"
 		}
 		im.SentAt = ts(sent)

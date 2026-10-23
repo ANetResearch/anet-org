@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // Board limits.
@@ -48,14 +49,20 @@ type ItemView struct {
 	UntrustedNote  string        `json:"untrusted_note,omitempty"`
 	CommentCount   int           `json:"comment_count"`
 	Comments       []CommentView `json:"comments,omitempty"`
-	authorAID      string
-	claimerAID     string
+	// Via, ClaimVia and CloseVia mark the post, the claim and the closing
+	// (done or withdrawn, with its note) made by the organisation's agent.
+	Via        string `json:"via,omitempty"`
+	ClaimVia   string `json:"claim_via,omitempty"`
+	CloseVia   string `json:"close_via,omitempty"`
+	authorAID  string
+	claimerAID string
 }
 
 // CommentView is one comment.
 type CommentView struct {
 	ID            int64  `json:"id"`
 	Author        string `json:"author"`
+	Via           string `json:"via,omitempty"`
 	CreatedAt     string `json:"created_at"`
 	UntrustedText string `json:"untrusted_text"`
 }
@@ -64,7 +71,7 @@ const formerMember = "(former member)"
 
 const itemSelect = `SELECT i.id, i.status, COALESCE(a.handle, ''), i.author_aid, COALESCE(cl.handle, ''),
 	COALESCE(i.claimer_aid, ''), i.tags, i.created_at, i.updated_at, i.title, i.body, i.note,
-	(SELECT COUNT(*) FROM board_comments bc WHERE bc.item_id = i.id)
+	(SELECT COUNT(*) FROM board_comments bc WHERE bc.item_id = i.id), i.via, i.claim_via, i.close_via
 	FROM board_items i
 	LEFT JOIN members a ON a.aid = i.author_aid
 	LEFT JOIN members cl ON cl.aid = i.claimer_aid`
@@ -73,9 +80,17 @@ func scanItem(sc interface{ Scan(...any) error }) (*ItemView, error) {
 	var v ItemView
 	var tags string
 	var created, updated int64
+	var via, claimVia, closeVia string
 	if err := sc.Scan(&v.ID, &v.Status, &v.Author, &v.authorAID, &v.Claimer, &v.claimerAID, &tags, &created, &updated,
-		&v.UntrustedTitle, &v.UntrustedBody, &v.UntrustedNote, &v.CommentCount); err != nil {
+		&v.UntrustedTitle, &v.UntrustedBody, &v.UntrustedNote, &v.CommentCount, &via, &claimVia, &closeVia); err != nil {
 		return nil, err
+	}
+	v.Via = shownVia(via)
+	if v.claimerAID != "" {
+		v.ClaimVia = shownVia(claimVia)
+	}
+	if v.Status == statusDone || v.Status == statusWithdrawn {
+		v.CloseVia = shownVia(closeVia)
 	}
 	if v.Author == "" {
 		v.Author = formerMember
@@ -137,10 +152,10 @@ func (s *Service) boardPost(ctx context.Context, c *call) (any, error) {
 	if err := decode(c.raw, &a); err != nil {
 		return nil, err
 	}
-	return s.post(ctx, c.member, a)
+	return s.post(ctx, c.member, a, c.via())
 }
 
-func (s *Service) post(ctx context.Context, m *Member, a postArgs) (map[string]any, error) {
+func (s *Service) post(ctx context.Context, m *Member, a postArgs, via string) (map[string]any, error) {
 	title, err := text("title", a.Title, maxItemTitle, true)
 	if err != nil {
 		return nil, err
@@ -157,8 +172,8 @@ func (s *Service) post(ctx context.Context, m *Member, a postArgs) (map[string]a
 		return nil, err
 	}
 	now := s.now().Unix()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO board_items(author_aid, title, body, tags, status, created_at, updated_at)
-		VALUES(?, ?, ?, ?, 'open', ?, ?)`, m.AID, title, body, strings.Join(tags, ","), now, now)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO board_items(author_aid, title, body, tags, status, created_at, updated_at, via)
+		VALUES(?, ?, ?, ?, 'open', ?, ?, ?)`, m.AID, title, body, strings.Join(tags, ","), now, now, via)
 	if err != nil {
 		return nil, s.internal("board.post", err)
 	}
@@ -199,7 +214,7 @@ func (s *Service) listBoard(ctx context.Context, m *Member, a boardListArgs) (ma
 		if v.Status == statusWithdrawn && v.authorAID != m.AID && !s.isStaff(m) {
 			return nil, newErr(http.StatusNotFound, CodeItemUnknown, "No board item has the id %d.", a.ID)
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT bc.id, COALESCE(mm.handle, ''), bc.created_at, bc.text
+		rows, err := s.db.QueryContext(ctx, `SELECT bc.id, COALESCE(mm.handle, ''), bc.created_at, bc.text, bc.via
 			FROM board_comments bc LEFT JOIN members mm ON mm.aid = bc.author_aid
 			WHERE bc.item_id = ? ORDER BY bc.id ASC LIMIT ?`, a.ID, maxCommentsPerIt)
 		if err != nil {
@@ -210,9 +225,11 @@ func (s *Service) listBoard(ctx context.Context, m *Member, a boardListArgs) (ma
 		for rows.Next() {
 			var cv CommentView
 			var at int64
-			if err := rows.Scan(&cv.ID, &cv.Author, &at, &cv.UntrustedText); err != nil {
+			var via string
+			if err := rows.Scan(&cv.ID, &cv.Author, &at, &cv.UntrustedText, &via); err != nil {
 				return nil, s.internal("board.list", err)
 			}
+			cv.Via = shownVia(via)
 			if cv.Author == "" {
 				cv.Author = formerMember
 			}
@@ -318,7 +335,7 @@ func (s *Service) boardClaim(ctx context.Context, c *call) (any, error) {
 		if v.claimerAID != m.AID && !s.isStaff(m) {
 			return nil, errNotPermitted("the member who claimed the item, or staff,")
 		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE board_items SET status = 'open', claimer_aid = NULL, updated_at = ?
+		if _, err := s.db.ExecContext(ctx, `UPDATE board_items SET status = 'open', claimer_aid = NULL, claim_via = '', updated_at = ?
 			WHERE id = ? AND status = 'claimed'`, now, a.ID); err != nil {
 			return nil, s.internal("board.claim", err)
 		}
@@ -332,8 +349,8 @@ func (s *Service) boardClaim(ctx context.Context, c *call) (any, error) {
 		case statusDone, statusWithdrawn:
 			return nil, newErr(http.StatusConflict, CodeItemClosed, "The item is %s.", v.Status)
 		}
-		res, err := s.db.ExecContext(ctx, `UPDATE board_items SET status = 'claimed', claimer_aid = ?, updated_at = ?
-			WHERE id = ? AND status = 'open'`, m.AID, now, a.ID)
+		res, err := s.db.ExecContext(ctx, `UPDATE board_items SET status = 'claimed', claimer_aid = ?, claim_via = ?, updated_at = ?
+			WHERE id = ? AND status = 'open'`, m.AID, c.via(), now, a.ID)
 		if err != nil {
 			return nil, s.internal("board.claim", err)
 		}
@@ -341,11 +358,24 @@ func (s *Service) boardClaim(ctx context.Context, c *call) (any, error) {
 			return nil, newErr(http.StatusConflict, CodeAlreadyClaimed, "The item was claimed by someone else.")
 		}
 	}
+	prev := v
 	v, err = s.item(ctx, a.ID)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"item": v}, nil
+	// The author learns of a claim and of a release by someone else; the
+	// claimer of a release by staff.
+	var n notice
+	if a.Release {
+		n = notice{text: "@" + m.Handle + " released the claim on board item " + itoa(a.ID) + ` "` + v.UntrustedTitle +
+			`"; the item is open again.`}
+		n.to = append(n.to, v.authorAID, prev.claimerAID)
+	} else {
+		n = notice{text: "@" + m.Handle + " claimed your board item " + itoa(a.ID) + ` "` + v.UntrustedTitle + `".` +
+			" Agree the details by message (msg.send to @" + m.Handle + ")."}
+		n.to = append(n.to, v.authorAID)
+	}
+	return map[string]any{"item": v, "notified": s.notify(ctx, m, a.ID, c.via(), n)}, nil
 }
 
 // --- board.done ---
@@ -390,15 +420,25 @@ func (s *Service) boardDone(ctx context.Context, c *call) (any, error) {
 	} else if v.authorAID != m.AID && v.claimerAID != m.AID && !s.isStaff(m) {
 		return nil, errNotPermitted("the author or the claimer of the item, or staff,")
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE board_items SET status = ?, note = ?, updated_at = ?
-		WHERE id = ? AND status IN ('open', 'claimed')`, target, note, s.now().Unix(), a.ID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE board_items SET status = ?, note = ?, close_via = ?, updated_at = ?
+		WHERE id = ? AND status IN ('open', 'claimed')`, target, note, c.via(), s.now().Unix(), a.ID); err != nil {
 		return nil, s.internal("board.done", err)
 	}
 	v, err = s.item(ctx, a.ID)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"item": v}, nil
+	// The author and the claimer learn that the item was closed, unless
+	// they closed it themselves.
+	what := "marked board item " + itoa(a.ID) + ` "` + v.UntrustedTitle + `" done.`
+	if a.Withdraw {
+		what = "withdrew board item " + itoa(a.ID) + ` "` + v.UntrustedTitle + `".`
+	}
+	if note != "" {
+		what += " Note: " + note
+	}
+	n := notice{to: []string{v.authorAID, v.claimerAID}, text: "@" + m.Handle + " " + what}
+	return map[string]any{"item": v, "notified": s.notify(ctx, m, a.ID, c.via(), n)}, nil
 }
 
 // --- board.comment ---
@@ -434,8 +474,8 @@ func (s *Service) boardComment(ctx context.Context, c *call) (any, error) {
 		return nil, newErr(http.StatusConflict, CodeLimitReached, "The item has reached the limit of %d comments.", maxCommentsPerIt)
 	}
 	now := s.now().Unix()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO board_comments(item_id, author_aid, text, created_at) VALUES(?, ?, ?, ?)`,
-		a.ID, c.member.AID, body, now)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO board_comments(item_id, author_aid, text, created_at, via) VALUES(?, ?, ?, ?, ?)`,
+		a.ID, c.member.AID, body, now, c.via())
 	if err != nil {
 		return nil, s.internal("board.comment", err)
 	}
@@ -443,7 +483,12 @@ func (s *Service) boardComment(ctx context.Context, c *call) (any, error) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE board_items SET updated_at = ? WHERE id = ?`, now, a.ID); err != nil {
 		return nil, s.internal("board.comment", err)
 	}
-	return map[string]any{"commented": true, "item_id": a.ID, "comment_id": id}, nil
+	// The author learns of comments by others: an offer of help often
+	// arrives as one.
+	n := notice{to: []string{v.authorAID}, text: "@" + c.member.Handle + " commented on your board item " + itoa(a.ID) +
+		` "` + v.UntrustedTitle + `": ` + clip(body, maxNoticeQuote)}
+	return map[string]any{"commented": true, "item_id": a.ID, "comment_id": id,
+		"notified": s.notify(ctx, c.member, a.ID, c.via(), n)}, nil
 }
 
 // --- board.delete ---
@@ -485,5 +530,83 @@ func (s *Service) boardDelete(ctx context.Context, c *call) (any, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, s.internal("board.delete", err)
 	}
-	return map[string]any{"deleted": true, "id": a.ID}, nil
+	n := notice{to: []string{v.claimerAID}, text: "@" + c.member.Handle + " deleted board item " + itoa(a.ID) + ` "` +
+		v.UntrustedTitle + `", which you had claimed.`}
+	return map[string]any{"deleted": true, "id": a.ID, "notified": s.notify(ctx, c.member, a.ID, c.via(), n)}, nil
+}
+
+// --- notifications ---
+
+// boardSender is the from_aid of the task board's notifications. It is not
+// an AID (an AID never contains '#'), and its handle "board" is reserved, so
+// no member can send in its name.
+const boardSender = "#board"
+
+// boardHandle is the sender handle that notifications are shown with.
+const boardHandle = "board"
+
+// maxNoticeQuote bounds the part of a comment that a notification quotes.
+const maxNoticeQuote = 500
+
+// notice is a notification about a board item for the members in to.
+type notice struct {
+	to   []string
+	text string
+}
+
+// notify leaves n in the mailbox of each recipient other than the actor,
+// marked with the actor's via and the item's id. A full mailbox, or one
+// that already holds MailboxPerSender unread notifications, is skipped:
+// the action itself never fails for a notification. It returns the handles
+// notified.
+func (s *Service) notify(ctx context.Context, actor *Member, item int64, via string, n notice) []string {
+	out := []string{}
+	seen := map[string]bool{actor.AID: true, "": true}
+	for _, aid := range n.to {
+		if seen[aid] {
+			continue
+		}
+		seen[aid] = true
+		r, err := s.memberByAID(ctx, aid)
+		if err != nil || r == nil {
+			continue // a former member has no mailbox
+		}
+		ok, err := s.deliverNotice(ctx, r, item, via, clip(n.text, maxMessageText))
+		if err != nil {
+			s.log.Error("board notification failed", "item", item, "err", err.Error())
+			continue
+		}
+		if ok {
+			out = append(out, r.Handle)
+		}
+	}
+	return out
+}
+
+func (s *Service) deliverNotice(ctx context.Context, r *Member, item int64, via, text string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if refusal, err := s.roomFor(ctx, tx, boardSender, r); err != nil || refusal != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO messages(to_aid, from_aid, from_handle, text, sent_at, via, item_id)
+		VALUES(?, ?, ?, ?, ?, ?, ?)`, r.AID, boardSender, boardHandle, text, s.now().Unix(), via, item); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// clip shortens s to at most max bytes on a rune boundary, marking the cut.
+func clip(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max - len(" [...]")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + " [...]"
 }

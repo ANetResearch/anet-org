@@ -14,7 +14,11 @@ import (
 )
 
 // SchemaVersion is the version written to meta.schema_version.
-const SchemaVersion = 1
+//
+//	1: 0.3.x up to 0.3.8
+//	2: 0.3.9: via columns (writes made by the organisation's agent), board
+//	   notifications (messages.item_id), no usage table
+const SchemaVersion = 2
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -61,7 +65,9 @@ CREATE TABLE IF NOT EXISTS messages (
   from_handle  TEXT NOT NULL,
   via_group    TEXT NOT NULL DEFAULT '',
   text         TEXT NOT NULL,
-  sent_at      INTEGER NOT NULL
+  sent_at      INTEGER NOT NULL,
+  via          TEXT NOT NULL DEFAULT '',
+  item_id      INTEGER
 );
 CREATE INDEX IF NOT EXISTS messages_to ON messages(to_aid, id);
 CREATE TABLE IF NOT EXISTS board_items (
@@ -74,7 +80,10 @@ CREATE TABLE IF NOT EXISTS board_items (
   claimer_aid  TEXT,
   note         TEXT NOT NULL DEFAULT '',
   created_at   INTEGER NOT NULL,
-  updated_at   INTEGER NOT NULL
+  updated_at   INTEGER NOT NULL,
+  via          TEXT NOT NULL DEFAULT '',
+  claim_via    TEXT NOT NULL DEFAULT '',
+  close_via    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS board_status ON board_items(status, id);
 CREATE TABLE IF NOT EXISTS board_comments (
@@ -82,7 +91,8 @@ CREATE TABLE IF NOT EXISTS board_comments (
   item_id     INTEGER NOT NULL REFERENCES board_items(id) ON DELETE CASCADE,
   author_aid  TEXT NOT NULL,
   text        TEXT NOT NULL,
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  via         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS board_comments_item ON board_comments(item_id, id);
 CREATE TABLE IF NOT EXISTS projects (
@@ -91,7 +101,8 @@ CREATE TABLE IF NOT EXISTS projects (
   title        TEXT NOT NULL,
   description  TEXT NOT NULL,
   owner_aid    TEXT NOT NULL,
-  created_at   INTEGER NOT NULL
+  created_at   INTEGER NOT NULL,
+  via          TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS notes (
   id          INTEGER PRIMARY KEY,
@@ -101,7 +112,8 @@ CREATE TABLE IF NOT EXISTS notes (
   title       TEXT NOT NULL,
   text        TEXT NOT NULL,
   url         TEXT NOT NULL DEFAULT '',
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  via         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS notes_project ON notes(project_id, id);
 `
@@ -148,23 +160,39 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
 	if _, err := db.Exec(`INSERT INTO meta(key, value) VALUES('schema_version', ?)
-		ON CONFLICT(key) DO NOTHING`, fmt.Sprint(SchemaVersion)); err != nil {
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, fmt.Sprint(SchemaVersion)); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return db, nil
 }
 
+// addedColumns are the columns later versions added, with their
+// definitions. Existing rows get the default: an empty via means a write the
+// member's own node made, which is what every write before 0.3.9 was.
+var addedColumns = []struct{ table, column, def string }{
+	{"members", "skeleton", "TEXT NOT NULL DEFAULT ''"},
+	{"held_handles", "skeleton", "TEXT NOT NULL DEFAULT ''"},
+	{"messages", "via", "TEXT NOT NULL DEFAULT ''"},
+	{"messages", "item_id", "INTEGER"},
+	{"board_items", "via", "TEXT NOT NULL DEFAULT ''"},
+	{"board_items", "claim_via", "TEXT NOT NULL DEFAULT ''"},
+	{"board_items", "close_via", "TEXT NOT NULL DEFAULT ''"},
+	{"board_comments", "via", "TEXT NOT NULL DEFAULT ''"},
+	{"projects", "via", "TEXT NOT NULL DEFAULT ''"},
+	{"notes", "via", "TEXT NOT NULL DEFAULT ''"},
+}
+
 // migrate adds what later versions need to a database made by an earlier
-// one. Columns are added empty; the service fills them (org.New).
+// one. Skeletons are added empty; the service fills them (org.New).
 func migrate(db *sql.DB) error {
-	for _, t := range []string{"members", "held_handles"} {
-		has, err := hasColumn(db, t, "skeleton")
+	for _, c := range addedColumns {
+		has, err := hasColumn(db, c.table, c.column)
 		if err != nil {
 			return err
 		}
 		if !has {
-			if _, err := db.Exec(`ALTER TABLE ` + t + ` ADD COLUMN skeleton TEXT NOT NULL DEFAULT ''`); err != nil {
+			if _, err := db.Exec(`ALTER TABLE ` + c.table + ` ADD COLUMN ` + c.column + ` ` + c.def); err != nil {
 				return err
 			}
 		}
