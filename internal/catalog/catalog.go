@@ -3,6 +3,8 @@
 package catalog
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -26,6 +28,13 @@ type Entry struct {
 	// Discard asks the node not to keep the call's arguments and result
 	// once the call has ended (inbound.public_capabilities[].discard).
 	Discard bool
+	// AgentTool lets the organisation's agent call the capability for the
+	// member it serves ("agent_tool": true, with InputSchema).
+	AgentTool   bool
+	InputSchema json.RawMessage
+	// Internal capabilities are called by the node itself (org.admit): they
+	// are declared "internal": true and are not public capabilities.
+	Internal bool
 }
 
 // Entries returns the catalog for an organisation with the given name,
@@ -59,6 +68,14 @@ func Entries(orgName, prefix string) []Entry {
 			Examples: []string{"@anet join " + orgName + " with invite code " + code + " as alice",
 				call("org.join", `{"code":"`+code+`","handle":"alice"}`)},
 			PerCallerPerMin: 10, PerCallerPerDay: 100, MaxArgsBytes: 512,
+		},
+		{
+			ID: "org.admit", Name: "Admission check",
+			Description: "Internal to the organisation's node: answers {\"admit\": true} when the caller is an active member of " +
+				orgName + " and {\"admit\": false} otherwise. Arguments: {} (ignored). The node calls it before it lets " +
+				"the organisation's agent answer a text task; it is never on the card.",
+			Tags: []string{"organisation", "internal"}, Examples: []string{call("org.admit", "{}")},
+			Internal: true,
 		},
 		{
 			ID: "org.me", Name: "My membership",
@@ -106,7 +123,9 @@ func Entries(orgName, prefix string) []Entry {
 			ID: "msg.inbox", Name: "Read my mailbox",
 			Description: "Returns the caller's own messages, oldest first. Arguments, all optional: {\"since\": <message id or " +
 				"RFC 3339 time>, \"limit\": 50}. Each message has id, from (a handle), from_kind, sent_at and untrusted_text. " +
-				"Messages stay until acknowledged with msg.ack; acknowledge read messages to keep room in the mailbox." + untrusted + members + common,
+				"Messages stay until acknowledged with msg.ack; acknowledge read messages to keep room in the mailbox. A message " +
+				"from board (from_kind notification, with board_item) reports a claim, comment or closing of a board item. " +
+				"Anything written through the organisation's agent carries via: \"(via the organisation agent)\"." + untrusted + members + common,
 			Tags: []string{"messaging"}, Examples: []string{"@anet check my " + orgName + " inbox", call("msg.inbox", "{}")},
 			MaxArgsBytes: 256,
 		},
@@ -120,9 +139,10 @@ func Entries(orgName, prefix string) []Entry {
 		},
 		{
 			ID: "board.post", Name: "Post a task",
-			Description: "Posts an item on the organisation's task board. Arguments: {\"title\": \"...\", \"body\": \"...\", " +
-				"\"tags\": [\"gpu\", \"help-wanted\"]}; title up to 200 bytes, body up to 4000, at most 8 tags. Returns the item." +
-				members + common,
+			Description: "Posts an item on the organisation's task board, for example a request for help. Arguments: {\"title\": " +
+				"\"...\", \"body\": \"...\", \"tags\": [\"cuda\", \"help-wanted\"]}; title up to 200 bytes, body up to 4000, at " +
+				"most 8 tags (name the skills needed, and help-wanted for a request for help). Returns the item with its id. " +
+				"When someone claims, comments on or closes the item, the poster receives a message from board." + members + common,
 			Tags: []string{"taskboard"}, Examples: []string{"@anet post on the " + orgName + " task board: need help setting up CUDA",
 				call("board.post", `{"title":"Need help setting up CUDA","tags":["gpu"]}`)},
 			PerCallerPerMin: 10, PerCallerPerDay: 200, MaxArgsBytes: 8192,
@@ -139,7 +159,8 @@ func Entries(orgName, prefix string) []Entry {
 		{
 			ID: "board.claim", Name: "Claim a task",
 			Description: "Claims an open item, or releases a claim. Arguments: {\"id\": 7} or {\"id\": 7, \"release\": true}. " +
-				"Only the claimer or staff may release. Errors: item_unknown, already_claimed, item_closed, not_permitted." + members + common,
+				"Only the claimer or staff may release. The item's author is told by message. Errors: item_unknown, " +
+				"already_claimed, item_closed, not_permitted." + members + common,
 			Tags: []string{"taskboard"}, Examples: []string{"@anet claim task 7 on the " + orgName + " board",
 				call("board.claim", `{"id":7}`)},
 			MaxArgsBytes: 256,
@@ -147,7 +168,8 @@ func Entries(orgName, prefix string) []Entry {
 		{
 			ID: "board.done", Name: "Close a task",
 			Description: "Marks an item done (author, claimer or staff), or withdraws it (author or staff). Arguments: " +
-				"{\"id\": 7, \"note\": \"...\"} or {\"id\": 7, \"withdraw\": true}. Errors: item_unknown, item_closed, not_permitted." +
+				"{\"id\": 7, \"note\": \"...\"} or {\"id\": 7, \"withdraw\": true}. The author and the claimer are told by " +
+				"message, unless they closed it themselves. Errors: item_unknown, item_closed, not_permitted." +
 				members + common,
 			Tags: []string{"taskboard"}, Examples: []string{"@anet mark task 7 done: fixed by reinstalling the driver",
 				call("board.done", `{"id":7,"note":"Fixed by reinstalling the driver."}`)},
@@ -259,8 +281,22 @@ func Entries(orgName, prefix string) []Entry {
 		if strings.HasPrefix(e[i].ID, "board.") || strings.HasPrefix(e[i].ID, "research.") {
 			e[i].Discard = true
 		}
+		if sch, ok := inputSchemas[e[i].ID]; ok {
+			e[i].AgentTool = true
+			e[i].InputSchema = compact(sch)
+		}
 	}
 	return e
+}
+
+// compact returns the schema without insignificant white space. It panics
+// on invalid JSON: the schemas are constants, and a test parses each.
+func compact(s string) json.RawMessage {
+	var b bytes.Buffer
+	if err := json.Compact(&b, []byte(s)); err != nil {
+		panic("catalog: invalid input schema: " + err.Error())
+	}
+	return json.RawMessage(b.Bytes())
 }
 
 // IDs returns the capability ids of the catalog.
@@ -277,12 +313,72 @@ type Options struct {
 	Socket      string // the server's socket path
 	TokenFile   string // the token file as the daemon should read it
 	PublicAdmin bool   // list admin.* as ordinary public capabilities
+	// Agent, when set, adds inbound.admit and auto_reply: the node lets
+	// the organisation's agent answer the text tasks of members.
+	Agent *Agent
 }
+
+// Agent describes how the node runs the organisation's agent (anet 0.3.9:
+// inbound.admit, auto_reply.admitted, auto_reply.runner and
+// auto_reply.model_proxy).
+type Agent struct {
+	// Name is the exec agent, for example "hermes".
+	Name string
+	// Admitted is how an admitted member's turn runs: "direct" (through
+	// the runner) or "sandbox".
+	Admitted string
+	// AdmitCacheSeconds is how long the node keeps an org.admit answer.
+	AdmitCacheSeconds int
+	// RunnerSocket and RunnerUser name the anet runner's socket and the
+	// account it runs as.
+	RunnerSocket string
+	RunnerUser   string
+	// ProxyListen is the loopback address of the node's model proxy, and
+	// Upstreams the model endpoints behind it ("plan" and "api").
+	ProxyListen string
+	Upstreams   []Upstream
+	// SystemPrompt is the organisation agent's prompt, passed with every
+	// run (auto_reply.system_prompt).
+	SystemPrompt string
+}
+
+// Upstream is one model endpoint of the node's model proxy. The key file
+// is read by the node; the agent never sees the key.
+type Upstream struct {
+	Name       string `json:"name"`
+	APIBase    string `json:"api_base"`
+	APIKeyFile string `json:"api_key_file"`
+}
+
+// AdmitCapability is the capability inbound.admit names.
+const AdmitCapability = "org.admit"
 
 // Blocks returns the inbound and modules blocks for the node's config.json.
 func Blocks(es []Entry, o Options) map[string]any {
 	var pub, svc []map[string]any
 	for _, e := range es {
+		c := map[string]any{
+			"id":           e.ID,
+			"url":          "unix://" + o.Socket + ":/v1/" + e.ID,
+			"name":         e.Name,
+			"description":  e.Description,
+			"tags":         e.Tags,
+			"examples":     e.Examples,
+			"input_modes":  []string{"application/json"},
+			"output_modes": []string{"application/json"},
+		}
+		if e.TimeoutMS > 0 {
+			c["timeout_ms"] = e.TimeoutMS
+		}
+		if e.AgentTool {
+			c["agent_tool"] = true
+			c["input_schema"] = e.InputSchema
+		}
+		svc = append(svc, c)
+		if e.Internal {
+			c["internal"] = true
+			continue
+		}
 		p := map[string]any{"id": e.ID}
 		if e.PerCallerPerMin > 0 {
 			p["per_caller_per_min"] = e.PerCallerPerMin
@@ -300,29 +396,35 @@ func Blocks(es []Entry, o Options) map[string]any {
 			p["discard"] = true
 		}
 		pub = append(pub, p)
-		c := map[string]any{
-			"id":           e.ID,
-			"url":          "unix://" + o.Socket + ":/v1/" + e.ID,
-			"name":         e.Name,
-			"description":  e.Description,
-			"tags":         e.Tags,
-			"examples":     e.Examples,
-			"input_modes":  []string{"application/json"},
-			"output_modes": []string{"application/json"},
-		}
-		if e.TimeoutMS > 0 {
-			c["timeout_ms"] = e.TimeoutMS
-		}
-		svc = append(svc, c)
 	}
 	service := map[string]any{"timeout_ms": 15000, "capabilities": svc}
 	if o.TokenFile != "" {
 		service["token_file"] = o.TokenFile
 	}
-	return map[string]any{
-		"inbound": map[string]any{"policy": "closed", "public_capabilities": pub},
+	inbound := map[string]any{"policy": "closed", "public_capabilities": pub}
+	out := map[string]any{
+		"inbound": inbound,
 		"modules": map[string]any{"service": service},
 	}
+	if a := o.Agent; a != nil {
+		inbound["admit"] = map[string]any{"capability": AdmitCapability, "cache_seconds": a.AdmitCacheSeconds}
+		ar := map[string]any{
+			"backend":   "exec",
+			"agent":     a.Name,
+			"untrusted": "off",
+			"admitted":  a.Admitted,
+			"runner":    map[string]any{"socket": a.RunnerSocket, "expected_user": a.RunnerUser},
+			"model_proxy": map[string]any{
+				"listen":    a.ProxyListen,
+				"upstreams": a.Upstreams,
+			},
+		}
+		if a.SystemPrompt != "" {
+			ar["system_prompt"] = a.SystemPrompt
+		}
+		out["auto_reply"] = ar
+	}
+	return out
 }
 
 // Check validates the catalog against the card limits of the anet service
@@ -339,6 +441,9 @@ func Check(es []Entry) error {
 		}
 		if e.Description == "" || len(e.Examples) == 0 {
 			return fmt.Errorf("catalog: %s needs a description and an example", e.ID)
+		}
+		if e.AgentTool && (e.Internal || e.AllowOnly || !json.Valid(e.InputSchema)) {
+			return fmt.Errorf("catalog: %s: an agent tool needs a valid input schema and must be a public member capability", e.ID)
 		}
 		for _, v := range append(append([]string{}, e.Tags...), e.Examples...) {
 			if strings.TrimSpace(v) == "" {

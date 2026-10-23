@@ -1,7 +1,8 @@
 // Command anet-org is the organisation agent that runs behind an anet node.
 //
 //	anet-org serve      --config FILE
-//	anet-org gen-config --config FILE [--token-file PATH] [--public-admin]
+//	anet-org gen-config --config FILE [--token-file PATH] [--public-admin] [agent flags | --no-agent]
+//	anet-org gen-agent  --config FILE [--agent hermes] [--model NAME] [--part all|config|prompt]
 //	anet-org gen-token  PATH
 //	anet-org admin      --config FILE invite create [--count N] [--expires-days N] [--uses N] [--kind K] [--note TEXT]
 //	anet-org admin      --config FILE invite list [--all]
@@ -24,15 +25,19 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
+	"github.com/ANetResearch/anet-org/internal/agentcfg"
 	"github.com/ANetResearch/anet-org/internal/catalog"
 	"github.com/ANetResearch/anet-org/internal/config"
 	"github.com/ANetResearch/anet-org/internal/org"
@@ -44,7 +49,14 @@ const usage = `anet-org: the organisation agent behind an anet node.
 
 Usage:
   anet-org serve      --config FILE
-  anet-org gen-config --config FILE [--token-file PATH] [--public-admin]
+  anet-org gen-config --config FILE [--token-file PATH] [--public-admin] [--no-agent]
+                      [--agent hermes] [--admitted direct|sandbox] [--admit-cache-seconds N]
+                      [--runner-socket PATH] [--runner-user NAME]
+                      [--model-proxy-listen HOST:PORT]
+                      [--model-plan-base URL] [--model-plan-key-file PATH]
+                      [--model-api-base URL] [--model-api-key-file PATH]
+  anet-org gen-agent  --config FILE [--agent hermes] [--model NAME] [--anet-command PATH]
+                      [--part all|config|prompt]
   anet-org gen-token  PATH
   anet-org admin      --config FILE invite create [--count N] [--expires-days N] [--uses N] [--kind K] [--note TEXT]
   anet-org admin      --config FILE invite list [--all]
@@ -69,6 +81,8 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "gen-config":
 		err = cmdGenConfig(os.Args[2:], os.Stdout)
+	case "gen-agent":
+		err = cmdGenAgent(os.Args[2:], os.Stdout)
 	case "gen-token":
 		err = cmdGenToken(os.Args[2:])
 	case "admin":
@@ -205,10 +219,32 @@ func cmdServe(args []string) error {
 	}
 }
 
+// Defaults of the node blocks for the organisation's agent.
+const (
+	defaultRunnerSocket = "/run/anet-runner/runner.sock"
+	defaultRunnerUser   = "anet-runner"
+	defaultProxyListen  = "127.0.0.1:47811"
+	defaultPlanBase     = "https://ark.cn-beijing.volces.com/api/plan/v3"
+	defaultAPIBase      = "https://ark.cn-beijing.volces.com/api/v3"
+	defaultPlanKeyFile  = "${HOME}/.config/anet-org/ark-plan.key"
+	defaultAPIKeyFile   = "${HOME}/.config/anet-org/ark-api.key"
+)
+
 func cmdGenConfig(args []string, out io.Writer) error {
 	fs, cfgPath := flags("gen-config")
 	tokenFile := fs.String("token-file", "", "token file path as the anet daemon reads it (default: the config's token_file)")
 	publicAdmin := fs.Bool("public-admin", false, "list admin.* as ordinary public capabilities instead of allow_only")
+	noAgent := fs.Bool("no-agent", false, "omit inbound.admit and auto_reply (no organisation agent)")
+	agent := fs.String("agent", "hermes", "the exec agent the node runs for members")
+	admitted := fs.String("admitted", "direct", "how an admitted member's turn runs: direct (through the runner) or sandbox")
+	cache := fs.Int("admit-cache-seconds", 30, "how long the node keeps an org.admit answer (1 to 300)")
+	runnerSocket := fs.String("runner-socket", defaultRunnerSocket, "the anet runner's socket")
+	runnerUser := fs.String("runner-user", defaultRunnerUser, "the account the anet runner runs as")
+	listen := fs.String("model-proxy-listen", defaultProxyListen, "loopback address of the node's model proxy")
+	planBase := fs.String("model-plan-base", defaultPlanBase, "API base of the upstream plan")
+	planKey := fs.String("model-plan-key-file", defaultPlanKeyFile, "key file of the upstream plan, read by the node")
+	apiBase := fs.String("model-api-base", defaultAPIBase, "API base of the upstream api")
+	apiKey := fs.String("model-api-key-file", defaultAPIKeyFile, "key file of the upstream api, read by the node")
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
@@ -230,11 +266,121 @@ func cmdGenConfig(args []string, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("socket: %w", err)
 	}
-	b := catalog.Blocks(es, catalog.Options{Socket: sock, TokenFile: tf, PublicAdmin: *publicAdmin})
+	o := catalog.Options{Socket: sock, TokenFile: tf, PublicAdmin: *publicAdmin}
+	if !*noAgent {
+		a, err := agentBlocks(cfg.Org.Name, *agent, *admitted, *cache, *runnerSocket, *runnerUser, *listen,
+			[]catalog.Upstream{{Name: "plan", APIBase: *planBase, APIKeyFile: *planKey}, {Name: "api", APIBase: *apiBase, APIKeyFile: *apiKey}})
+		if err != nil {
+			return err
+		}
+		o.Agent = a
+	}
+	b := catalog.Blocks(es, o)
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(b)
+}
+
+// agentBlocks checks the agent flags of gen-config. Paths are written as
+// this environment resolves them, like the socket.
+func agentBlocks(org, agent, admitted string, cache int, socket, user, listen string, ups []catalog.Upstream) (*catalog.Agent, error) {
+	if !knownAgent(agent) {
+		return nil, usageErr(fmt.Sprintf("--agent %q: use one of %v", agent, agentcfg.Agents))
+	}
+	if admitted != "direct" && admitted != "sandbox" {
+		return nil, usageErr("--admitted is direct or sandbox")
+	}
+	if cache < 1 || cache > 300 {
+		return nil, usageErr("--admit-cache-seconds is 1 to 300")
+	}
+	sock, err := config.ExpandPath(socket)
+	if err != nil {
+		return nil, fmt.Errorf("--runner-socket: %w", err)
+	}
+	if strings.TrimSpace(user) == "" {
+		return nil, usageErr("--runner-user is required")
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil || !(host == "127.0.0.1" || host == "::1" || host == "localhost") {
+		return nil, usageErr("--model-proxy-listen is a loopback HOST:PORT, for example " + defaultProxyListen)
+	}
+	for i := range ups {
+		u := &ups[i]
+		if !strings.HasPrefix(u.APIBase, "https://") {
+			return nil, usageErr(fmt.Sprintf("--model-%s-base must be an https URL", u.Name))
+		}
+		u.APIBase = strings.TrimRight(u.APIBase, "/")
+		p, err := config.ExpandPath(u.APIKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("--model-%s-key-file: %w", u.Name, err)
+		}
+		u.APIKeyFile = p
+	}
+	return &catalog.Agent{Name: agent, Admitted: admitted, AdmitCacheSeconds: cache, RunnerSocket: sock, RunnerUser: user,
+		ProxyListen: listen, Upstreams: ups, SystemPrompt: agentcfg.Prompt(org)}, nil
+}
+
+func knownAgent(name string) bool {
+	for _, a := range agentcfg.Agents {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
+var modelNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$`)
+
+func cmdGenAgent(args []string, out io.Writer) error {
+	fs, cfgPath := flags("gen-agent")
+	agent := fs.String("agent", "hermes", "the agent program to configure")
+	model := fs.String("model", agentcfg.DefaultModel, "the model the agent asks for")
+	anetCmd := fs.String("anet-command", "anet", "how the runner account starts anet (for anet turn-mcp)")
+	part := fs.String("part", "all", "what to print: all, config (the agent's configuration) or prompt (the system prompt)")
+	if _, err := parse(fs, args); err != nil {
+		return err
+	}
+	if !knownAgent(*agent) {
+		return usageErr(fmt.Sprintf("--agent %q: use one of %v", *agent, agentcfg.Agents))
+	}
+	if !modelNameRe.MatchString(*model) {
+		return usageErr("--model: a model name has 1 to 128 letters, digits and ._:/@+-")
+	}
+	if strings.ContainsAny(*anetCmd, "\"\n\r") || strings.TrimSpace(*anetCmd) == "" {
+		return usageErr("--anet-command: a command name or an absolute path")
+	}
+	cfg, err := load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	conf := agentcfg.Hermes(agentcfg.HermesOptions{Model: *model, AnetCommand: *anetCmd})
+	prompt := agentcfg.Prompt(cfg.Org.Name)
+	switch *part {
+	case "config":
+		_, err = io.WriteString(out, conf)
+	case "prompt":
+		_, err = io.WriteString(out, prompt+"\n")
+	case "all":
+		_, err = fmt.Fprintf(out, "%s\n# System prompt of the organisation agent. anet-org gen-config writes the same text into\n"+
+			"# the node's auto_reply.system_prompt, and the node passes it with every run; it is not part\n"+
+			"# of config.yaml. Print it alone with --part prompt.\n#\n%s\n", conf, commentLines(prompt))
+	default:
+		return usageErr("--part is all, config or prompt")
+	}
+	return err
+}
+
+func commentLines(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l == "" {
+			lines[i] = "#"
+		} else {
+			lines[i] = "# " + l
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func cmdGenToken(args []string) error {
