@@ -1,4 +1,4 @@
-// Command anet-org is the organisation agent that runs behind an anet node.
+// Command anet-org is the organisation program that runs behind an anet node.
 //
 //	anet-org serve      --config FILE
 //	anet-org gen-config --config FILE [--token-file PATH] [--public-admin] [agent flags | --no-agent]
@@ -45,7 +45,7 @@ import (
 	"github.com/ANetResearch/anet-org/internal/store"
 )
 
-const usage = `anet-org: the organisation agent behind an anet node.
+const usage = `anet-org: the organisation program behind an anet node.
 
 Usage:
   anet-org serve      --config FILE

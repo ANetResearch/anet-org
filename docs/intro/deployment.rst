@@ -21,7 +21,8 @@ Layout
    * - ``~/.config/anet-org/token``
      - The bearer token, mode 0600, read by both units.
    * - ``~/.config/anet-org/*.key``
-     - Assistant API keys, mode 0600. Never in a repository.
+     - Model API keys for the node's model proxy, mode 0600, read by the node
+       only (:doc:`agent-deployment`). Never in a repository.
    * - ``~/.local/state/anet-org/org.db``
      - The database.
    * - ``~/.local/state/anet-org-node/``
@@ -43,8 +44,10 @@ Steps
    and set ``org.name``, ``org.prefix`` and ``admins``. Create the token with
    ``anet-org gen-token ~/.config/anet-org/token``.
 4. Print the node's blocks with ``anet-org gen-config --config
-   ~/.config/anet-org/anet-org.json`` and merge ``inbound`` and
-   ``modules.service`` into ``$ANET_DATA_DIR/config.json``. Keep
+   ~/.config/anet-org/anet-org.json`` and merge ``inbound``,
+   ``modules.service`` and, with an agent, ``auto_reply`` into
+   ``$ANET_DATA_DIR/config.json``. Without an organisation agent, add
+   ``--no-agent``; :doc:`agent-deployment` describes the agent's part. Keep
    ``inbound.policy`` at ``closed``. ``deploy/node-config.example.json`` shows
    the output for the example configuration. The capabilities that carry member
    content are declared ``discard``, so the node keeps no copy of their
@@ -80,7 +83,27 @@ it holds the organisation's identity.
 Upgrades
 ========
 
-Stop ``anet-org.service``, replace the binary, start it again. After a change of
-the capability catalog, run ``gen-config`` again, update the node's
+Stop ``anet-org.service``, replace the binary, start it again. The database is
+migrated when it is opened; take a backup first. After a change of the
+capability catalog, run ``gen-config`` again, update the node's
 ``config.json``, restart the node and register again so that the hub's entry
 lists the new capabilities.
+
+Upgrading to 0.3.9
+------------------
+
+* The built-in assistant is removed. A configuration that still has the
+  ``assistant`` block is refused at start with a message saying so: delete the
+  block. Its model key files are now read by the node's model proxy, named in
+  ``gen-config``'s ``--model-plan-key-file`` and ``--model-api-key-file``.
+* The database moves to schema version 2: ``via`` columns are added to
+  messages, board items (with ``claim_via`` and ``close_via``), comments,
+  projects and notes, filled with the empty value for existing rows;
+  ``messages.item_id`` is added for board notifications; the assistant's
+  ``usage`` table is dropped. A backup made before the upgrade is the way back.
+* ``ask`` refuses every call with ``ask_moved``. Members send requests as text
+  tasks instead.
+* Regenerate the node's blocks with ``gen-config``: the capabilities gain
+  ``agent_tool`` and ``input_schema``, ``org.admit`` is declared
+  ``internal``, and ``inbound.admit`` and ``auto_reply`` are new
+  (:doc:`agent-deployment`).

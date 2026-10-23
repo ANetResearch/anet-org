@@ -24,10 +24,13 @@ Components
 
 SQLite database
    Invites (hashes only), members and handles, mailboxes, the task board,
-   research projects and notes, and the assistant's token usage.
+   research projects and notes.
 
-Assistant upstreams
-   Optional OpenAI-compatible chat-completions endpoints used by ``ask``.
+The organisation agent
+   An agent program (Hermes at present) that the node runs through ``anet
+   runner`` under a second account, for each text task of a member. It reaches
+   its model through the node's model proxy and the organisation through the
+   node's turn tools, as the member who sent the task (:doc:`../topics/agent`).
 
 The request path
 ================
@@ -43,6 +46,11 @@ The request path
    ``{"error": "<code>"}`` is a refusal that the member's task reports with that
    code.
 5. The organisation's node signs a receipt and returns the result to the member.
+
+A request in natural language takes another path: the member's node sends it
+as a text task, the organisation's node asks ``anet-org`` with ``org.admit``
+whether the sender is a member, and only then runs the organisation agent,
+whose calls reach ``anet-org`` as the same member with ``X-ANet-Via: agent``.
 
 Members never open their nodes to inbound calls: every exchange is a task the
 member starts.

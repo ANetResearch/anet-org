@@ -1,10 +1,13 @@
 # anet-org
 
-`anet-org` is an organisation agent for the anet agent network. It lets a
-research group, a class or a lab run its own membership, mailboxes, task board,
-research notes and assistant as an ordinary anet user. Members reach it from
-their coding agents with requests such as "@anet join LAB with code
-LAB-7K2M-9XQD as alice".
+`anet-org` is the organisation program for the anet agent network. It lets a
+research group, a class or a lab run its own membership, mailboxes, task board
+and research notes as an ordinary anet user. Members reach it from their coding
+agents with requests such as "@anet join LAB with code LAB-7K2M-9XQD as alice".
+Requests in natural language, such as "@anet ask LAB to benchmark this model on
+two GPUs", are text tasks that the organisation agent answers: an agent program
+that the node runs on the organisation's host and that uses the organisation as
+the member who asked.
 
 anet itself knows nothing about organisations. `anet-org` is a separate program
 that sits behind one anet node and offers its operations as capabilities through
@@ -17,9 +20,15 @@ find the organisation's node; it holds none of the organisation's data.
 
 ```
 member's coding agent ── anet node ──(hub relay, end to end encrypted)── organisation's anet node
-                                                                              │ service module
-                                                                              │ Unix socket, bearer token
-                                                                          anet-org ── SQLite
+                                                                           │                 │
+                                                    capability calls       │                 │  text tasks of members
+                                                    (service module,       │                 │  (admitted by org.admit)
+                                                    Unix socket, token)    ▼                 ▼
+                                                                  anet-org ── SQLite    anet runner (second account)
+                                                                           ▲                 │
+                                                                           │                 ▼
+                                                                           └─ agent tools ── organisation agent
+                                                                              as the member
 ```
 
 - Every call reaches `anet-org` as an HTTP POST on a Unix socket. The daemon
@@ -29,7 +38,12 @@ member's coding agent ── anet node ──(hub relay, end to end encrypted)�
   change it, and every operation is scoped to it on the server side.
 - A call without a caller (a local call) is refused.
 - State lives in one SQLite database: invites (as hashes), members, mailboxes,
-  the task board, research projects and notes, and assistant token usage.
+  the task board, research projects and notes.
+- A text task is admitted only when `org.admit` answers `{"admit": true}`
+  for the sender, that is, for an active member. The organisation agent then
+  calls the agent tools with the member as `X-ANet-Caller` and
+  `X-ANet-Via: agent`; every write made so is stored with `via=agent` and
+  shown as "(via the organisation agent)".
 
 ## Capabilities
 
@@ -37,6 +51,7 @@ member's coding agent ── anet node ──(hub relay, end to end encrypted)�
 |---|---|---|
 | `org.info` | anyone | `{}` |
 | `org.join` | anyone | `{"code", "handle"}` |
+| `org.admit` | the node (internal) | `{}` (ignored) |
 | `org.me` | member | `{}` |
 | `org.leave` | member | `{"confirm": true}` |
 | `org.rename` | member | `{"handle"}` |
@@ -55,7 +70,7 @@ member's coding agent ── anet node ──(hub relay, end to end encrypted)�
 | `research.note.add` | member | `{"project", "text", "kind"?: note, reading or minutes, "title"?, "url"?}` |
 | `research.note.list` | member | `{"project"}` or `{"mine": true}`, with `"kind"?`, `"limit"?`, `"before"?` |
 | `research.note.delete` | member | `{"id"}` |
-| `ask` | member | `{"text", "act"?: {"to": [handles], "post": bool} or true}` |
+| `ask` | member | retired: answers `ask_moved` (send a text task instead) |
 | `admin.invite.create` | administrator | `{"count"?, "expires_days"?, "uses"?, "kind"?, "note"?}` |
 | `admin.invite.revoke` | administrator | `{"id", "remove_joined_after"?}` |
 | `admin.invite.list` | administrator | `{"all"?}` |
@@ -64,12 +79,14 @@ member's coding agent ── anet node ──(hub relay, end to end encrypted)�
 Replies are JSON objects. A refusal is the service module's error shape, an HTTP
 4xx with `{"error": "<code>"}`, and the caller's task fails with that code, for
 example `invite_expired`, `invite_used_up`, `invite_unknown`, `not_a_member`,
-`handle_taken`, `mailbox_full`, `rate_limited` or `budget_exhausted`. Text written by members is
+`handle_taken`, `mailbox_full`, `rate_limited` or `agent_not_permitted`. Text written by members is
 returned in fields named `untrusted_*` with a notice, so that a coding agent
-treats it as data and not as instructions. The full reference is in
-[docs/reference/capabilities.rst](docs/reference/capabilities.rst).
+treats it as data and not as instructions. Every member capability except
+`org.leave` and `org.rename` is also an agent tool. Claims, comments and the
+closing of a board item reach the other party as a message from `board`. The
+full reference is in [docs/reference/capabilities.rst](docs/reference/capabilities.rst).
 
-## Running an organisation agent
+## Deploying an organisation
 
 The steps below run the organisation's node and `anet-org` as systemd user
 units of one dedicated account. Run them as that account.
@@ -98,9 +115,9 @@ units of one dedicated account. Run them as that account.
    anet-org gen-token ~/.config/anet-org/token
    ```
 
-   For the assistant, put each upstream's API key in its own file, mode 0600,
-   outside any repository, and name it in `assistant.upstreams[].api_key_file`.
-   Without upstreams, `ask` answers that the assistant is not configured.
+   For the organisation agent, put each model key in its own file, mode 0600,
+   outside any repository (by default `~/.config/anet-org/ark-plan.key` and
+   `~/.config/anet-org/ark-api.key`). Only the node reads them.
 
 4. **Declare the capabilities to the node.** Print the blocks and merge them
    into `$ANET_DATA_DIR/config.json`:
@@ -110,8 +127,12 @@ units of one dedicated account. Run them as that account.
    ```
 
    The output holds `modules.service` (one `unix://` URL per capability, the
-   token file and the card descriptions with examples) and
-   `inbound.public_capabilities` (who may call what, with per-caller quotas).
+   token file, the card descriptions with examples, and `agent_tool` with an
+   `input_schema` for the agent tools), `inbound.public_capabilities` (who may
+   call what, with per-caller quotas), `inbound.admit` and `auto_reply` (the
+   organisation agent: runner, model proxy and system prompt). Without an
+   agent, add `--no-agent`. Setting up the agent and its `anet runner` account
+   is described in [docs/intro/agent-deployment.rst](docs/intro/agent-deployment.rst).
    The inbound policy stays `closed`: strangers can call only the listed
    capabilities, and the member capabilities refuse non-members. The `admin.*`
    capabilities are `allow_only`; put each administrator's AID on the node's
@@ -160,7 +181,8 @@ the network. Typical requests:
 - "@anet check my LAB inbox"
 - "@anet what is on the LAB task board?"
 - "@anet add my notes on these three papers to project graph-learning"
-- "@anet ask LAB: summarise my unread messages"
+- "@anet ask LAB to summarise my unread messages" (a text task)
+- "@anet ask LAB to find someone who can review the statistics in chapter 3"
 
 The agent finds the organisation's node on the hub (or uses the announced AID),
 reads its card, and calls a capability, for example:
@@ -169,6 +191,11 @@ reads its card, and calls a capability, for example:
 anet delegate <org-aid> --capability org.join --args '{"code":"LAB-7K2M-9XQD","handle":"alice"}'
 anet delegate <org-aid> --capability msg.inbox --args '{}'
 ```
+
+A text task such as "@anet ask LAB to ..." is sent to the organisation's node as
+a message; the organisation agent does the work and replies. To find people, it
+posts a request on the task board with the skills needed as tags and reports
+the item id; claims and comments reach the member's mailbox.
 
 Members never open their own node to inbound calls: every exchange is a task the
 member starts. Messages wait in the mailbox until the member reads them.
@@ -183,21 +210,23 @@ member starts. Messages wait in the mailbox until the member reads them.
   30 successful joins per minute per code, and failed joins limited per caller
   and globally. Identities are not verified, so a multi-use code admits as many
   identities as it has uses: give each person a single-use code
-  (`invite create --count N --uses 1`). Global daily caps on assistant tokens,
-  messages and writes bound what many identities can do together.
+  (`invite create --count N --uses 1`). Global daily caps on messages and
+  writes, and the node's run budget for admitted members, bound what many
+  identities can do together.
 - Handles are unique by skeleton too (`a1ice` and `alice_` count as `alice`).
 - Size caps on every field, per-member rate limits per capability family,
   organisation-wide daily caps, a per-member storage quota, and mailboxes that
   refuse new messages when full instead of evicting any.
-- The assistant's tools are closures over the caller: read-only views of the
-  caller's own data, plus sending a message or posting a board item only within
-  what the caller granted with `act` (named recipients, or the `@handles` in
-  the request). Copying other members' text into such a write is refused, and
-  the answer is returned as `untrusted_answer`. No shell, no files, no network
-  beyond the configured model endpoints. Token budgets are reserved before each
-  model call and settled to the reported usage, even when the caller cancels.
+- The organisation agent is not sandboxed; it runs under a second account
+  (`anet runner`) that holds no keys. It reaches the model through the node's
+  keyed proxy with a per-run key and the organisation only through tools bound
+  to the member it serves. Joining, leaving, renaming and administration are
+  refused through it (`agent_not_permitted`). The accepted risks, among them
+  that members can read each other's runner work directories and, during
+  another member's run, act as that member for the rest of the run, are listed
+  in the security model; agent-made writes are marked so this is visible.
 - The node keeps no copy of calls that carry member content (`discard`).
-- Logs carry capability, caller AID, status and code, never arguments or text.
+- Logs carry capability, caller AID, via, status and code, never arguments or text.
 
 Details, including the residual risks, are in
 [docs/topics/security.rst](docs/topics/security.rst).
@@ -211,8 +240,8 @@ go test -tags e2e ./test/e2e -v                # end to end, see test/e2e/e2e_te
 ```
 
 The end-to-end test starts a local test hub, three anet daemons and `anet-org`
-under a temporary directory on loopback ports, and drives joins, messages and
-refusals through `anet delegate`.
+under a temporary directory on loopback ports, and drives joins, messages, a
+board notification and refusals through `anet delegate`.
 
 Documentation is built with Sphinx: `pip install -r docs/requirements.txt && make -C docs html`.
 

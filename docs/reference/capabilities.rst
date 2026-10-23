@@ -11,14 +11,28 @@ Text written by members is returned in fields named ``untrusted_*``; replies
 that contain such fields carry a ``notice`` saying that the text is data and
 not instructions. Times are RFC 3339 in UTC.
 
+Capabilities marked *agent tool* below may also be called by the organisation
+agent for a member, with ``X-ANet-Via: agent`` (:doc:`../topics/agent`). Every
+write made so carries ``via``, ``(via the organisation agent)``, wherever it is
+shown: in messages, board items (``via`` for the post, ``claim_via`` and
+``close_via`` for the claim and the closing), comments, projects and notes.
+Other capabilities refuse such calls with ``agent_not_permitted``.
+
 Organisation
 ============
 
-``org.info`` (anyone)
+``org.info`` (anyone; agent tool)
    Arguments: ``{}``. Returns ``name``, ``prefix``, ``description``,
    ``contact``, ``how_to_join``, ``invite_format``, ``stats.members``,
    ``caller`` (``member``, ``handle``, ``kind``, ``admin``) and
-   ``capabilities``.
+   ``capabilities`` (all but the internal ``org.admit``).
+
+``org.admit`` (internal)
+   Called by the organisation's node for ``inbound.admit``, never from the
+   network: ``gen-config`` declares it ``"internal": true`` and lists it in no
+   public capability. Arguments are ignored. Returns ``{"admit": true}`` when
+   the caller is an active member and ``{"admit": false}`` otherwise; nothing
+   else.
 
 ``org.join`` (anyone)
    Arguments: ``{"code": "LAB-7K2M-9XQD", "handle": "alice"}``. Returns
@@ -27,7 +41,7 @@ Organisation
    ``invite_used_up``, ``invalid_handle``, ``handle_reserved``,
    ``handle_taken``, ``already_member``, ``join_refused``, ``rate_limited``.
 
-``org.me`` (member)
+``org.me`` (member; agent tool)
    Arguments: ``{}``. Returns ``handle``, ``kind``, ``aid``, ``joined_at``,
    ``renamed_at``, ``next_rename_at``, ``admin``, ``staff`` and ``mailbox``
    (``messages``, ``limit``).
@@ -42,7 +56,7 @@ Organisation
    ``handle``, ``previous`` and ``next_rename_at``. Errors: ``invalid_handle``,
    ``handle_reserved``, ``handle_taken``, ``rename_too_soon``.
 
-``org.members`` (member)
+``org.members`` (member; agent tool)
    Arguments, all optional: ``query`` (part of a handle), ``kind``,
    ``include_aid``, ``limit`` (default 100, at most 500), ``offset``. Returns
    ``members`` (``handle``, ``kind``, ``joined_at`` and, with ``include_aid``,
@@ -51,7 +65,7 @@ Organisation
 Messages
 ========
 
-``msg.send`` (member)
+``msg.send`` (member; agent tool)
    Arguments: ``{"to": "bob", "text": "..."}``. ``to`` is a handle, with or
    without ``@``, or the group ``staff``; the group ``all`` is open to staff
    only. ``text`` is at most 4000 bytes. A full mailbox (``mailbox_max``
@@ -63,13 +77,15 @@ Messages
    ``not_permitted``, ``mailbox_full``, ``too_many_unread``, ``too_long``,
    ``rate_limited``.
 
-``msg.inbox`` (member)
+``msg.inbox`` (member; agent tool)
    Arguments, all optional: ``since`` (a message id, or an RFC 3339 time),
    ``limit`` (default 50, at most 200). Returns ``messages`` oldest first, each
-   with ``id``, ``from``, ``from_kind``, ``via_group``, ``sent_at`` and
-   ``untrusted_text``; ``more``; ``mailbox``; and ``notice``.
+   with ``id``, ``from``, ``from_kind``, ``via_group``, ``via``, ``sent_at``
+   and ``untrusted_text``; ``more``; ``mailbox``; and ``notice``. A
+   notification of the task board has ``from`` ``board``, ``from_kind``
+   ``notification`` and ``board_item`` (the item's id).
 
-``msg.ack`` (member)
+``msg.ack`` (member; agent tool)
    Arguments: ``{"ids": [12, 13]}`` (at most 500) or ``{"up_to": 13}``.
    Deletes those messages of the caller's mailbox. Returns ``acknowledged``.
 
@@ -79,38 +95,46 @@ Task board
 Items are ``open``, ``claimed``, ``done`` or ``withdrawn``. Only the author or
 the claimer may change an item; staff may moderate any item.
 
-``board.post`` (member)
-   Arguments: ``title`` (at most 200 bytes), ``body`` (4000), ``tags`` (at most
-   8, each 1 to 32 characters of ``a-z0-9_.-``). Returns ``item``.
+The board notifies by message. A claim, a release, a comment, a closing (done
+or withdrawn) or a deletion sends a message from ``board`` to the author and,
+where it applies, to the claimer, never to the member who acted. A full
+mailbox is skipped. The replies of these capabilities list the handles
+notified in ``notified``.
 
-``board.list`` (member)
+``board.post`` (member; agent tool)
+   Arguments: ``title`` (at most 200 bytes), ``body`` (4000), ``tags`` (at most
+   8, each 1 to 32 characters of ``a-z0-9_.-``). A request for help names the
+   skills needed as tags, together with ``help-wanted``. Returns ``item``.
+
+``board.list`` (member; agent tool)
    Arguments, all optional: ``status`` (``active``, the default, which is open
    and claimed; ``open``; ``claimed``; ``done``; ``withdrawn``; ``all``),
    ``tag``, ``mine``, ``query``, ``limit`` (default 30, at most 100),
    ``before`` (an item id, for paging); or ``id`` alone for one item with its
    comments. Items have ``id``, ``status``, ``author``, ``claimer``, ``tags``,
    ``created_at``, ``updated_at``, ``untrusted_title``, ``untrusted_body``,
-   ``untrusted_note``, ``comment_count`` and ``comments``.
+   ``untrusted_note``, ``comment_count``, ``comments`` and the marks ``via``,
+   ``claim_via`` and ``close_via``.
 
-``board.claim`` (member)
+``board.claim`` (member; agent tool)
    Arguments: ``{"id": 7}`` to claim an open item, ``{"id": 7, "release":
    true}`` to release a claim (claimer or staff). Errors: ``item_unknown``,
    ``already_claimed``, ``item_closed``, ``not_permitted``.
 
-``board.done`` (member)
+``board.done`` (member; agent tool)
    Arguments: ``{"id": 7, "note": "..."}`` marks the item done (author, claimer
    or staff); ``{"id": 7, "withdraw": true}`` withdraws it (author or staff).
    Errors: ``item_unknown``, ``item_closed``, ``not_permitted``.
 
-``board.comment`` (member)
+``board.comment`` (member; agent tool)
    Arguments: ``{"id": 7, "text": "..."}`` (at most 2000 bytes; 500 comments
    per item, all returned by ``board.list`` with ``id``). Returns
-   ``commented``, ``item_id`` and ``comment_id``.
+   ``commented``, ``item_id``, ``comment_id`` and ``notified``.
 
-``board.delete`` (member)
+``board.delete`` (member; agent tool)
    Arguments: ``{"id": 7}``. Only the author may. The item's text, tags and
-   comments are erased and it is no longer listed. Returns ``deleted`` and
-   ``id``. Errors: ``item_unknown``, ``not_permitted``.
+   comments are erased and it is no longer listed. Returns ``deleted``,
+   ``id`` and ``notified``. Errors: ``item_unknown``, ``not_permitted``.
 
 Board items, comments, projects and notes count against the author's
 ``member_content_bytes`` (``quota_exceeded``). A text ``query`` searches the
@@ -119,44 +143,37 @@ newest 2000 items.
 Research
 ========
 
-``research.project.create`` (member)
+``research.project.create`` (member; agent tool)
    Arguments: ``name`` (2 to 40 characters of ``a-z0-9-``), ``title``,
    ``description``. Errors: ``project_exists``, ``limit_reached``.
 
-``research.project.list`` (member)
+``research.project.list`` (member; agent tool)
    Arguments, all optional: ``query``, ``limit``. Returns ``projects`` with
    ``name``, ``owner``, ``created_at``, ``note_count``, ``untrusted_title`` and
    ``untrusted_description``.
 
-``research.note.add`` (member)
+``research.note.add`` (member; agent tool)
    Arguments: ``project``, ``text`` (at most 12000 bytes), ``kind`` (``note``,
    ``reading`` or ``minutes``), ``title``, ``url`` (http or https). Errors:
    ``project_unknown``, ``too_long``, ``invalid_value``.
 
-``research.note.list`` (member)
+``research.note.list`` (member; agent tool)
    Arguments: ``project``, or ``mine: true`` for the caller's notes in every
    project; ``kind``, ``mine``, ``limit``, ``before``. Returns ``notes`` with
    ``id``, ``project``, ``kind``, ``author``, ``created_at``,
    ``untrusted_title``, ``untrusted_text`` and ``untrusted_url``.
 
-``research.note.delete`` (member)
+``research.note.delete`` (member; agent tool)
    Arguments: ``{"id": 12}``. Only the author may. Errors: ``note_unknown``,
    ``not_permitted``.
 
-Assistant
-=========
+Retired
+=======
 
 ``ask`` (member)
-   Arguments: ``{"text": "..."}``, optionally with ``act``: ``{"to":
-   ["bob"], "post": true}`` grants exactly those writes, ``true`` grants
-   messages to the ``@handles`` in ``text`` and a post when ``text`` asks for
-   one. ``text`` is at most 4000 bytes. Returns ``configured``,
-   ``untrusted_answer``, ``generated``, ``notice``, ``actions`` (every
-   attempted write: ``tool``, ``status`` done or refused, ``code``, ``to``,
-   ``result``), ``stopped`` and ``usage`` (``tokens``, ``member_used_today``,
-   ``member_budget``); without upstreams, ``configured`` false and
-   ``message``. Errors: ``invalid_value``, ``budget_exhausted``, ``busy``,
-   ``assistant_unavailable``. See :doc:`../topics/assistant`.
+   Retired; kept until 0.4. Every call is refused with ``ask_moved``,
+   whatever its arguments. Send the request to the organisation as a message
+   (a text task); the organisation agent answers it.
 
 Administration
 ==============
@@ -226,13 +243,16 @@ the daemon reports as ``busy`` with a retry time.
      - The object's state does not allow the change.
    * - ``mailbox_full``, ``too_many_unread``, ``quota_exceeded``
      - A mailbox or the member's storage is full.
-   * - ``forward_refused``
-     - The assistant tried to copy other members' text into a write (reported
-       in ``actions``).
+   * - ``agent_not_permitted``
+     - The organisation agent called a capability that is not an agent tool.
+   * - ``bad_via``
+     - ``X-ANet-Via`` has a value other than ``agent``.
+   * - ``ask_moved``
+     - ``ask`` is retired; send the request as a text task.
    * - ``rate_limited``
      - A per-member, per-code, failed-join or organisation-wide daily limit
        was reached.
-   * - ``budget_exhausted``, ``assistant_unavailable``, ``busy``
-     - The assistant cannot answer now.
+   * - ``busy``
+     - The server handles its maximum of calls at once.
    * - ``internal_error``
      - An unexpected failure; the daemon reports ``backend_failed``.

@@ -29,7 +29,7 @@ Top-level keys
 ``token_file`` (required)
    The bearer token the daemon presents; the same file as the node's
    ``modules.service.token_file``. At least 16 bytes, mode 0600 or stricter
-   (any group or other permission bit is refused, for API key files too).
+   (any group or other permission bit is refused).
 ``database`` (required)
    The SQLite file; created with mode 0600.
 ``admins``
@@ -89,34 +89,22 @@ Top-level keys
         - ``msg.ack``
       * - ``ask``
         - 6/min, 100/day
-        - ``ask``
+        - ``ask`` (retired; answers ``ask_moved``)
+      * - ``admit``
+        - 600/min, 50000/day
+        - ``org.admit`` (called by the node, per sender)
       * - ``admin``
         - 60/min, 2000/day
         - ``admin.*``
 
    The counts are kept in memory and start again after a restart.
 
-``assistant``
-=============
+Removed keys
+============
 
-``upstreams``
-   A list of ``{"name", "base_url", "model", "api_key_file",
-   "max_concurrency"}``, in order of preference. ``base_url`` is https (or http
-   on a loopback address) and ends before ``/chat/completions``. ``model``
-   defaults to ``deepseek-v4-1-flash-261017``; ``max_concurrency`` to 8. An
-   empty list leaves the assistant unconfigured.
-``member_daily_tokens``, ``global_daily_tokens``
-   Defaults 2,000,000 and 200,000,000; 0 is unlimited. The global budget is
-   the primary cap; see :doc:`../topics/security`.
-``max_steps``
-   Model calls per ``ask``, default 6, at most 12.
-``max_output_tokens``
-   ``max_tokens`` of each model call, default 4096.
-``timeout_seconds``
-   One upstream request, default 90.
-``queue_size``, ``queue_wait_seconds``
-   Defaults 64 and 30.
-``quota_cooldown_seconds``
-   Default 3600.
-``backoff_base_seconds``, ``backoff_max_seconds``
-   Defaults 30 and 900.
+``assistant``
+   Removed in 0.3.9 together with the built-in assistant. A file that still
+   has it is refused at start, with a message that says so. The organisation
+   agent's model and keys are configured on the node (``auto_reply`` and its
+   ``model_proxy``), which ``anet-org gen-config`` prints; see
+   :doc:`../intro/agent-deployment`.

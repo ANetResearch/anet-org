@@ -44,7 +44,7 @@ const HandleHold = 30 * 24 * time.Hour
 var handleRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,23}$`)
 
 // reservedHandles cannot be taken by anyone. Names that suggest authority
-// or a function of the organisation agent are on it, and so are the group
+// or a function of the organisation are on it, and so are the group
 // names msg.send understands.
 var reservedHandles = map[string]bool{
 	"admin": true, "admins": true, "administrator": true, "staff": true, "helpdesk": true, "help": true,

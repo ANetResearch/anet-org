@@ -1,13 +1,16 @@
-# anet-org-node.service - the anet node in front of the organisation agent
+# anet-org-node.service - the anet node in front of anet-org
 # (systemd user unit).
 #
 # The node's data directory is ${XDG_STATE_HOME}/anet-org-node
 # (~/.local/state/anet-org-node). Its config.json carries the
-# modules.service block and the inbound.public_capabilities list that
-# `anet-org gen-config` prints. The binary is the one the anet installer
+# modules.service block, the inbound.public_capabilities list and, with
+# the organisation agent, inbound.admit and auto_reply, as `anet-org
+# gen-config` prints them. The node reads the model key files named in
+# auto_reply.model_proxy; the agent itself runs under the anet runner
+# account, outside this slice. The binary is the one the anet installer
 # puts in ~/.local/bin.
 [Unit]
-Description=anet node of the organisation agent
+Description=anet node of the organisation
 Documentation=https://github.com/ANetResearch/anet-org
 Wants=anet-org.service network-online.target
 After=anet-org.service network-online.target

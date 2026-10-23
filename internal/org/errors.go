@@ -120,5 +120,5 @@ func errInvalid(field, why string) *Error {
 }
 
 func errInternal() *Error {
-	return newErr(http.StatusInternalServerError, CodeInternal, "The organisation agent could not complete the request.")
+	return newErr(http.StatusInternalServerError, CodeInternal, "The organisation could not complete the request.")
 }

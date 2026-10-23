@@ -2,7 +2,7 @@
   "org": {
     "name": "Example Lab",
     "prefix": "LAB",
-    "description": "The organisation agent of the Example Lab research group.",
+    "description": "The organisation of the Example Lab research group on anet.",
     "join_instructions": "Ask a staff member of Example Lab for an invite code, then call org.join with the code and a handle of your choice.",
     "contact": "Group office, Room 101"
   },

@@ -2,10 +2,12 @@
 anet-org documentation
 =======================
 
-``anet-org`` is an organisation agent for the anet agent network. A research
-group, a class or a lab runs it behind one anet node to offer membership,
-mailboxes, a task board, research notes and an assistant to its members, who
-use it from their coding agents.
+``anet-org`` is the organisation program for the anet agent network. A
+research group, a class or a lab runs it behind one anet node to offer
+membership, mailboxes, a task board and research notes to its members, who use
+it from their coding agents. Requests in natural language are answered by the
+organisation agent, an agent program that the node runs on the organisation's
+host and that uses the organisation as the member it serves.
 
 First steps
 ===========
@@ -15,6 +17,7 @@ First steps
 
    intro/overview
    intro/deployment
+   intro/agent-deployment
    intro/joining
 
 Topics
@@ -24,7 +27,7 @@ Topics
    :maxdepth: 2
 
    topics/members
-   topics/assistant
+   topics/agent
    topics/security
 
 Reference

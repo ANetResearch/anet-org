@@ -1,4 +1,4 @@
-// Package server is the Unix-socket HTTP front of the organisation agent.
+// Package server is the Unix-socket HTTP front of anet-org.
 //
 // The anet daemon's service module POSTs each call to /v1/<capability> with
 // the arguments as a JSON object. Before anything is routed, the bearer
@@ -187,7 +187,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer func() { <-s.sem }()
 	default:
 		w.Header().Set("Retry-After", "5")
-		refuse(&org.Error{Status: http.StatusServiceUnavailable, Code: org.CodeBusy, Message: "The organisation agent is busy."})
+		refuse(&org.Error{Status: http.StatusServiceUnavailable, Code: org.CodeBusy, Message: "The organisation service is busy."})
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))

@@ -1,4 +1,4 @@
-# anet-org.service - the organisation agent (systemd user unit).
+# anet-org.service - the organisation program anet-org (systemd user unit).
 #
 # Install into ~/.config/systemd/user/ of the dedicated account, with
 #   ~/.local/bin/anet-org                  the binary
@@ -10,10 +10,10 @@
 # The program listens on a Unix socket in its runtime directory,
 # ${XDG_RUNTIME_DIR}/anet-org/backend.sock (mode 0600); the node's service
 # module checks the directory chain and the listener's uid before it sends
-# anything. The program opens no network port; the only outbound
-# connections are to the assistant's configured upstream URLs.
+# anything. The program opens no network port and makes no outbound
+# connection, so it is limited to Unix sockets.
 [Unit]
-Description=anet-org organisation agent
+Description=anet-org organisation program
 Documentation=https://github.com/ANetResearch/anet-org
 Before=anet-org-node.service
 
@@ -33,7 +33,7 @@ LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 # Seccomp filters work in any user manager.
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
 # The namespace settings below need a user namespace in a user unit
 # (systemd.exec(5), "Sandboxing": they "will work when used in conjunction

@@ -11,8 +11,7 @@ Errors carry codes, not sentences
    specific (``unknown_field``, ``too_long``, ``handle_taken``) so that an agent
    can act on the code alone. 429 and 503 become ``busy`` in the daemon and lose
    the code, so ``rate_limited`` is sent as 403 (its ``Retry-After`` header is
-   not passed on); only a full server or a full assistant queue answers 503
-   ``busy``.
+   not passed on); only a full server answers 503 ``busy``.
 
 Admin capabilities are ``allow_only``
    ``admin.*`` stay off the public card. Administrators are put on the node's
@@ -64,28 +63,42 @@ Research space
    Projects are visible to all members; notes have a kind (``note``,
    ``reading``, ``minutes``) that covers reading lists and meeting minutes.
 
-The assistant acts only within the caller's grant
-   Write tools are offered only for what ``act`` grants: explicit recipients
-   and posting, or with ``"act": true`` the ``@handles`` and the post request
-   in the caller's own text. Copying member-written tool output into a write is
-   refused. The answer is returned as ``untrusted_answer``.
+No intelligence in ``anet-org``
+   Requests in natural language are text tasks answered by the organisation
+   agent that the node runs. ``anet-org`` keeps the organisation's state and
+   rules; it calls no model. ``ask`` stays until 0.4 only to answer
+   ``ask_moved``.
 
-Budgets count total tokens and are reserved first
-   The budget is charged with ``usage.total_tokens`` (prompt and completion,
-   including reasoning), the closest figure to what the upstream bills. Each
-   model call first reserves half a token per prompt character plus
-   ``max_output_tokens``, and is then settled to the reported usage; a call
-   that may have been served without a usage report (a timeout, a broken
-   reply) keeps its reservation. The global budget is the primary cap.
+Admission is a yes or no
+   ``org.admit`` answers ``{"admit": true}`` or ``{"admit": false}`` and
+   ignores its arguments, so that the node's admission check reveals nothing
+   that ``org.info`` does not already tell the caller about itself. It has its
+   own rate family, ``admit``, so that admission checks never use up a
+   member's ``read`` allowance.
 
-Upstream reset times
-   A quota error that states a reset time without a zone is read as UTC+8.
+The agent gate is enforced twice
+   The node calls only the capabilities declared ``agent_tool``, and
+   ``anet-org`` refuses every other capability with ``X-ANet-Via: agent``
+   (``agent_not_permitted``), so that a mistaken node configuration cannot let
+   the agent leave, rename or administer in a member's name.
+
+Marks instead of separate identities
+   The agent writes as the member it serves, with the member's limits and
+   quota, and every such write is stored with ``via=agent``. Readers can tell
+   what the agent wrote; no second identity per member is needed.
+
+Notifications come from ``board``
+   Board notifications are messages from the reserved handle ``board``, kept in
+   the mailbox until acknowledged like any other. They do not count against
+   the actor's message limits, and one mailbox holds at most
+   ``mailbox_per_sender`` of them unread. An action never fails because a
+   notification could not be delivered.
 
 Rate limits in memory
    Per-member rate counters, the organisation-wide daily caps on messages and
    writes, and the failed-join counters are in memory and restart with the
    program. The daemon's own per-caller quotas persist across restarts of
-   ``anet-org``, and the assistant's token usage is in the database.
+   ``anet-org``.
 
 ``/healthz`` needs the token
    Without the token the server tells nothing, not even its version.
@@ -96,5 +109,5 @@ One database connection
    organisation is small. Backups use ``VACUUM INTO`` from a second process.
 
 Logs without content
-   One JSON line per call with capability, caller AID, interaction id, status,
-   code and duration. Upstream logs name the upstream, status and token counts.
+   One JSON line per call with capability, caller AID, ``via``, interaction
+   id, status, code and duration.

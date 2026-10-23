@@ -210,7 +210,7 @@ func (s *Service) Has(id string) bool { _, ok := s.caps[id]; return ok }
 func (s *Service) Dispatch(ctx context.Context, id string, caller Caller, raw json.RawMessage) (any, error) {
 	cp, ok := s.caps[id]
 	if !ok {
-		return nil, newErr(http.StatusNotFound, CodeUnknownCapability, "The capability %q is not offered by this organisation agent.", id)
+		return nil, newErr(http.StatusNotFound, CodeUnknownCapability, "The capability %q is not offered by this organisation.", id)
 	}
 	if caller.Local {
 		// A call without a caller: only the operator in admin-local mode,
