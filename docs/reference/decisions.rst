@@ -90,9 +90,11 @@ Marks instead of separate identities
 Notifications come from ``board``
    Board notifications are messages from the reserved handle ``board``, kept in
    the mailbox until acknowledged like any other. They do not count against
-   the actor's message limits, and one mailbox holds at most
-   ``mailbox_per_sender`` of them unread. An action never fails because a
-   notification could not be delivered.
+   the actor's message rate limits, but they occupy the actor's
+   ``mailbox_per_sender`` places in the recipient's mailbox, with at most 10
+   unread per item. Counting them under ``board`` as a whole would let one
+   member's comments use up the places of every other member's notifications.
+   An action never fails because a notification could not be delivered.
 
 Rate limits in memory
    Per-member rate counters, the organisation-wide daily caps on messages and

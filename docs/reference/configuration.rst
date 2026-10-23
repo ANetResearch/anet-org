@@ -43,7 +43,8 @@ Top-level keys
    Unread messages a mailbox holds; default 500, at most 100000. A full
    mailbox refuses new messages.
 ``mailbox_per_sender``
-   Unread messages one sender may have in one mailbox; default 50.
+   Unread messages one sender may have in one mailbox, counting the board
+   notifications caused by that sender; default 50.
 ``failed_joins_per_caller``, ``failed_joins_global``
    Failed ``org.join`` attempts in a ten-minute window, per caller (default 10)
    and for everyone (default 300).

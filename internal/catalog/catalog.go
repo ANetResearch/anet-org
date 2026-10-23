@@ -113,7 +113,7 @@ func Entries(orgName, prefix string) []Entry {
 			Description: "Leaves a message in another member's mailbox. Arguments: {\"to\": \"bob\", \"text\": \"...\"}; to is " +
 				"a handle (with or without @) or the group staff; the group all is open to staff only. Text up to 4000 bytes. " +
 				"The recipient reads it with msg.inbox. A full mailbox refuses new messages (mailbox_full), and one sender may have " +
-				"at most 50 unread messages in a mailbox (too_many_unread); nothing is ever evicted. Errors: recipient_unknown, " +
+				"at most 50 unread messages in a mailbox, the board notifications its actions caused included (too_many_unread); nothing is ever evicted. Errors: recipient_unknown, " +
 				"mailbox_full, too_many_unread, too_long, rate_limited." + members + common,
 			Tags: []string{"messaging"}, Examples: []string{"@anet tell @bob in " + orgName + ": the group meeting moves to 3 pm",
 				call("msg.send", `{"to":"bob","text":"The group meeting moves to 3 pm."}`)},

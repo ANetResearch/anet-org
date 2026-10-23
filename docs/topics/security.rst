@@ -78,9 +78,12 @@ Limits
   ``rate_limited``. Calls made by the organisation agent for a member count
   against that member's limits and content quota.
 * A mailbox holds at most ``mailbox_max`` unread messages, and one sender at
-  most ``mailbox_per_sender`` (50) of them. A full mailbox refuses new messages
-  (``mailbox_full``, ``too_many_unread``); nothing already in a mailbox is ever
-  evicted, so flooding cannot delete someone's mail.
+  most ``mailbox_per_sender`` (50) of them, counting the board notifications
+  that the sender's actions caused (and at most 10 unread per board item). A
+  full mailbox refuses new messages (``mailbox_full``, ``too_many_unread``);
+  nothing already in a mailbox is ever evicted, so flooding cannot delete
+  someone's mail, and one member cannot hold back the board notifications
+  that other members cause.
 * Each member's stored board and research content is bounded by
   ``member_content_bytes`` (5 MiB, ``quota_exceeded``); members can delete
   their own board items (``board.delete``) and notes

@@ -306,3 +306,85 @@ func TestBoardNotifications(t *testing.T) {
 	// Nobody can write as the board: the handle is reserved.
 	e.fail(aidEve, "org.join", map[string]any{"code": e.invite(InviteOptions{}), "handle": "board"}, CodeHandleReserved)
 }
+
+// Board notifications are counted per acting member: one member's comments
+// use up only that member's places in the recipient's mailbox, so they
+// cannot silence the notifications that other members' actions cause.
+func TestBoardNotificationsAreCountedPerActor(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.MailboxPerSender = 2 * maxNoticesPerItem
+		c.Rates["write"] = config.Rate{PerMinute: 1000, PerDay: 1000}
+		c.Rates["msg"] = config.Rate{PerMinute: 1000, PerDay: 1000}
+	})
+	e.join(aidAlice, "alice")
+	e.join(aidBob, "bob")
+	e.join(aidCarol, "carol")
+	e.join(aidEve, "eve")
+	notices := func() []map[string]any {
+		var out []map[string]any
+		for _, m := range list(e.ok(aidAlice, "msg.inbox", map[string]any{"limit": 200})["messages"]) {
+			if obj(m)["from_kind"] == "notification" {
+				out = append(out, obj(m))
+			}
+		}
+		return out
+	}
+	post := func(title string) int64 {
+		return num(obj(e.ok(aidAlice, "board.post", map[string]any{"title": title})["item"])["id"])
+	}
+	first, second, third := post("first"), post("second"), post("third")
+
+	// One actor and one item: at most maxNoticesPerItem unread notifications.
+	for i := 0; i < maxNoticesPerItem+3; i++ {
+		res := e.ok(aidEve, "board.comment", map[string]any{"id": first, "text": fmt.Sprint("first ", i)})
+		if want := i < maxNoticesPerItem; (len(list(res["notified"])) == 1) != want {
+			t.Fatalf("comment %d on one item: notified %v", i, res["notified"])
+		}
+	}
+	// The same actor on a second item, up to its mailbox_per_sender places.
+	for i := 0; i < maxNoticesPerItem; i++ {
+		e.ok(aidEve, "board.comment", map[string]any{"id": second, "text": fmt.Sprint("second ", i)})
+	}
+	if res := e.ok(aidEve, "board.comment", map[string]any{"id": third, "text": "over the quota"}); len(list(res["notified"])) != 0 {
+		t.Fatalf("notified beyond the actor's places: %v", res)
+	}
+	if n := notices(); len(n) != 2*maxNoticesPerItem {
+		t.Fatalf("notifications held: %d", len(n))
+	}
+	// The actor's notifications and messages share the actor's places.
+	e.fail(aidEve, "msg.send", map[string]any{"to": "alice", "text": "and a message"}, CodeTooManyUnread)
+
+	// Everyone else still reaches alice through the board.
+	if res := e.ok(aidBob, "board.claim", map[string]any{"id": first}); fmt.Sprint(res["notified"]) != "[alice]" {
+		t.Fatalf("claim by another member after the flood: %v", res["notified"])
+	}
+	if res := e.ok(aidCarol, "board.comment", map[string]any{"id": third, "text": "I can help."}); fmt.Sprint(res["notified"]) != "[alice]" {
+		t.Fatalf("comment by another member after the flood: %v", res["notified"])
+	}
+	n := notices()
+	if len(n) != 2*maxNoticesPerItem+2 {
+		t.Fatalf("notifications held: %d", len(n))
+	}
+	// The message keeps its shape: from board, a notification, with the item.
+	for _, m := range n {
+		if m["from"] != "board" || m["from_kind"] != "notification" || num(m["board_item"]) == 0 {
+			t.Fatalf("notification shape: %v", m)
+		}
+	}
+	last := n[len(n)-1]
+	if num(last["board_item"]) != third || !contains(str(last["untrusted_text"]), "@carol commented") {
+		t.Fatalf("last notification: %v", last)
+	}
+
+	// The mailbox as a whole stays bounded by mailbox_max.
+	e.cfg.MailboxMax = len(n)
+	if res := e.ok(aidCarol, "board.comment", map[string]any{"id": second, "text": "Also this one."}); len(list(res["notified"])) != 0 {
+		t.Fatalf("notified into a full mailbox: %v", res)
+	}
+
+	// Once alice reads her mailbox, the actor has places again.
+	e.ok(aidAlice, "msg.ack", map[string]any{"up_to": 1 << 40})
+	if res := e.ok(aidEve, "board.comment", map[string]any{"id": first, "text": "again"}); fmt.Sprint(res["notified"]) != "[alice]" {
+		t.Fatalf("after ack: %v", res["notified"])
+	}
+}

@@ -64,13 +64,15 @@ A request for help is a board item with the skills needed as tags and the tag
 the other party automatically: the author receives a message from ``board``
 (``from_kind`` ``notification``, with ``board_item``), and the claimer is told
 when the author closes or deletes the item. These messages occupy mailbox
-places like any other and are acknowledged with ``msg.ack``.
+places like any other and are acknowledged with ``msg.ack``. A notification
+counts as a message from the member whose action caused it.
 
 Mailboxes
 =========
 
 A mailbox holds at most ``mailbox_max`` unread messages (500 by default), and
-at most 50 from any one sender. A full mailbox refuses new messages
+at most ``mailbox_per_sender`` (50) from any one sender, the board
+notifications caused by that sender included. A full mailbox refuses new messages
 (``mailbox_full``, ``too_many_unread``); nothing is ever removed to make room.
 Messages stay until the member acknowledges them with ``msg.ack``.
 

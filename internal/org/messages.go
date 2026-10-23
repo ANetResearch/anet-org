@@ -138,11 +138,13 @@ func (s *Service) send(ctx context.Context, from *Member, a sendArgs, via string
 
 // roomFor returns a refusal when r's mailbox cannot take another message
 // from the sender: the mailbox holds MailboxMax unread messages, or the
-// sender already has MailboxPerSender unread messages in it.
+// sender already has MailboxPerSender unread messages in it. The board
+// notifications that the sender's actions caused count as the sender's, so
+// one member holds at most MailboxPerSender places in another's mailbox.
 func (s *Service) roomFor(ctx context.Context, tx *sql.Tx, sender string, r *Member) (*Error, error) {
 	var total, mine int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(from_aid = ?), 0) FROM messages WHERE to_aid = ?`,
-		sender, r.AID).Scan(&total, &mine); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(from_aid = ? OR from_aid = ?), 0) FROM messages WHERE to_aid = ?`,
+		sender, boardFrom(sender), r.AID).Scan(&total, &mine); err != nil {
 		return nil, s.internal("send", err)
 	}
 	if total >= s.cfg.MailboxMax {
@@ -151,7 +153,7 @@ func (s *Service) roomFor(ctx context.Context, tx *sql.Tx, sender string, r *Mem
 	}
 	if mine >= s.cfg.MailboxPerSender {
 		return newErr(http.StatusConflict, CodeTooManyUnread,
-			"%s has %d unread messages from the caller. Wait until they are read.", r.Handle, mine), nil
+			"%s has %d unread messages and board notifications from the caller. Wait until they are read.", r.Handle, mine), nil
 	}
 	return nil, nil
 }
@@ -234,7 +236,7 @@ func (s *Service) inbox(ctx context.Context, m *Member, a inboxArgs) (map[string
 		}
 		im.Via = shownVia(via)
 		switch {
-		case sender == boardSender:
+		case strings.HasPrefix(sender, boardSender):
 			im.FromKind = "notification"
 		case fromAID.Valid:
 			im.FromKind = s.kindOf(&Member{AID: fromAID.String, Kind: kind})

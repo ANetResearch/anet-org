@@ -94,8 +94,11 @@ the task board for the member:
 4. When the member later asks about the request, the agent reads the item with
    ``board.list {"id": N}`` (status, claimer, comments) and the member's inbox.
 
-A notification never makes the action fail: a full mailbox is skipped, and one
-mailbox holds at most ``mailbox_per_sender`` unread notifications.
+A notification never makes the action fail; it is skipped when the mailbox is
+full. Notifications count against the places of the member whose action caused
+them: together with that member's messages, at most ``mailbox_per_sender`` per
+mailbox, and at most 10 unread about any one item. One member's actions
+therefore never hold back the notifications that other members cause.
 
 The system prompt
 =================

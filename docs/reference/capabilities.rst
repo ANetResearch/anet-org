@@ -97,9 +97,12 @@ the claimer may change an item; staff may moderate any item.
 
 The board notifies by message. A claim, a release, a comment, a closing (done
 or withdrawn) or a deletion sends a message from ``board`` to the author and,
-where it applies, to the claimer, never to the member who acted. A full
-mailbox is skipped. The replies of these capabilities list the handles
-notified in ``notified``.
+where it applies, to the claimer, never to the member who acted. A
+notification counts as a message from the member who acted: it is skipped
+when the recipient's mailbox is full, when that member already holds
+``mailbox_per_sender`` places in it, or when it already holds 10 unread
+notifications from that member about the item. The replies of these
+capabilities list the handles notified in ``notified``.
 
 ``board.post`` (member; agent tool)
    Arguments: ``title`` (at most 200 bytes), ``body`` (4000), ``tags`` (at most

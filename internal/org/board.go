@@ -537,10 +537,21 @@ func (s *Service) boardDelete(ctx context.Context, c *call) (any, error) {
 
 // --- notifications ---
 
-// boardSender is the from_aid of the task board's notifications. It is not
-// an AID (an AID never contains '#'), and its handle "board" is reserved, so
-// no member can send in its name.
+// boardSender begins the from_aid of every task board notification. It is
+// not an AID (an AID never contains '#'), and its handle "board" is
+// reserved, so no member can send in its name.
 const boardSender = "#board"
+
+// boardFrom is the from_aid of a notification caused by the member with the
+// AID actor. Keying notifications by actor keeps one member's actions from
+// using up the places of everyone else's: they count against the actor's
+// own MailboxPerSender places in the recipient's mailbox (see roomFor).
+func boardFrom(actor string) string { return boardSender + ":" + actor }
+
+// maxNoticesPerItem bounds the unread notifications about one item that one
+// actor's actions leave in one mailbox. Further comments stay readable on
+// the item itself.
+const maxNoticesPerItem = 10
 
 // boardHandle is the sender handle that notifications are shown with.
 const boardHandle = "board"
@@ -555,10 +566,11 @@ type notice struct {
 }
 
 // notify leaves n in the mailbox of each recipient other than the actor,
-// marked with the actor's via and the item's id. A full mailbox, or one
-// that already holds MailboxPerSender unread notifications, is skipped:
-// the action itself never fails for a notification. It returns the handles
-// notified.
+// marked with the actor's via and the item's id. A full mailbox, one in
+// which the actor already holds MailboxPerSender places, or one with
+// maxNoticesPerItem unread notifications by the actor about the item, is
+// skipped: the action itself never fails for a notification. It returns the
+// handles notified.
 func (s *Service) notify(ctx context.Context, actor *Member, item int64, via string, n notice) []string {
 	out := []string{}
 	seen := map[string]bool{actor.AID: true, "": true}
@@ -571,7 +583,7 @@ func (s *Service) notify(ctx context.Context, actor *Member, item int64, via str
 		if err != nil || r == nil {
 			continue // a former member has no mailbox
 		}
-		ok, err := s.deliverNotice(ctx, r, item, via, clip(n.text, maxMessageText))
+		ok, err := s.deliverNotice(ctx, r, actor, item, via, clip(n.text, maxMessageText))
 		if err != nil {
 			s.log.Error("board notification failed", "item", item, "err", err.Error())
 			continue
@@ -583,17 +595,26 @@ func (s *Service) notify(ctx context.Context, actor *Member, item int64, via str
 	return out
 }
 
-func (s *Service) deliverNotice(ctx context.Context, r *Member, item int64, via, text string) (bool, error) {
+func (s *Service) deliverNotice(ctx context.Context, r, actor *Member, item int64, via, text string) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	if refusal, err := s.roomFor(ctx, tx, boardSender, r); err != nil || refusal != nil {
+	if refusal, err := s.roomFor(ctx, tx, actor.AID, r); err != nil || refusal != nil {
 		return false, err
 	}
+	from := boardFrom(actor.AID)
+	var onItem int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE to_aid = ? AND from_aid = ? AND item_id = ?`,
+		r.AID, from, item).Scan(&onItem); err != nil {
+		return false, err
+	}
+	if onItem >= maxNoticesPerItem {
+		return false, nil
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO messages(to_aid, from_aid, from_handle, text, sent_at, via, item_id)
-		VALUES(?, ?, ?, ?, ?, ?, ?)`, r.AID, boardSender, boardHandle, text, s.now().Unix(), via, item); err != nil {
+		VALUES(?, ?, ?, ?, ?, ?, ?)`, r.AID, from, boardHandle, text, s.now().Unix(), via, item); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
