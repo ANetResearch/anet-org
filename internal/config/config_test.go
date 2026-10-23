@@ -17,28 +17,19 @@ func TestDefaults(t *testing.T) {
 	if c.Org.Prefix != "LAB" || c.MailboxMax != DefaultMailboxMax || c.JoinsPerMinutePerCode != 30 {
 		t.Fatalf("defaults: %+v", c)
 	}
-	if c.Rates["msg"].PerMinute != 20 || c.Assistant.Configured() {
-		t.Fatal("rates or assistant defaults")
-	}
-	if c.Assistant.MemberBudget() != 2_000_000 || c.Assistant.GlobalBudget() != 200_000_000 {
-		t.Fatal("budget defaults")
+	if c.Rates["msg"].PerMinute != 20 || c.Rates["admit"].PerMinute == 0 {
+		t.Fatal("rate defaults")
 	}
 }
 
-func TestBudgetZeroIsUnlimitedAndUpstreams(t *testing.T) {
-	raw := strings.Replace(minimal, `"database"`, `"assistant":{"member_daily_tokens":0,"upstreams":[
-		{"name":"plan","base_url":"https://ark.example/api/plan/v3/","api_key_file":"/k/plan"},
-		{"name":"api","base_url":"https://ark.example/api/v3","api_key_file":"/k/api","max_concurrency":3}]},"database"`, 1)
-	c, err := Parse([]byte(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Assistant.MemberBudget() != 0 || c.Assistant.GlobalBudget() != DefaultGlobalDailyTokens {
-		t.Fatal("budgets")
-	}
-	u := c.Assistant.Upstreams
-	if u[0].BaseURL != "https://ark.example/api/plan/v3" || u[0].Model != DefaultModel || u[0].MaxConcurrency != 8 || u[1].MaxConcurrency != 3 {
-		t.Fatalf("upstreams: %+v", u)
+// A configuration of an earlier version with the assistant block is refused
+// with a sentence that says what to do, not merely as an unknown key.
+func TestRemovedAssistantBlockRefused(t *testing.T) {
+	raw := strings.Replace(minimal, `"database"`, `"assistant":{"upstreams":[
+		{"name":"plan","base_url":"https://model.example/v3","api_key_file":"/k/plan"}]},"database"`, 1)
+	_, err := Parse([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "removed in 0.3.9") || !strings.Contains(err.Error(), "model_proxy") {
+		t.Fatalf("assistant block: %v", err)
 	}
 }
 
@@ -51,9 +42,7 @@ func TestRejects(t *testing.T) {
 		strings.Replace(minimal, `"database"`, `"unknown_key":1,"database"`, 1),
 		strings.Replace(minimal, `"database"`, `"admins":["short"],"database"`, 1),
 		strings.Replace(minimal, `"database"`, `"rates":{"nope":{"per_minute":1,"per_day":1}},"database"`, 1),
-		strings.Replace(minimal, `"database"`, `"assistant":{"upstreams":[{"name":"a","base_url":"http://example.com","api_key_file":"/k"}]},"database"`, 1),
-		strings.Replace(minimal, `"database"`, `"assistant":{"upstreams":[{"name":"a","base_url":"https://example.com"}]},"database"`, 1),
-		strings.Replace(minimal, `"database"`, `"assistant":{"global_daily_tokens":-1},"database"`, 1),
+		strings.Replace(minimal, `"database"`, `"assistant":{},"database"`, 1),
 		minimal + `{}`,
 	}
 	for _, b := range bad {

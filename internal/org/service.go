@@ -19,15 +19,33 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/ANetResearch/anet-org/internal/assistant"
 	"github.com/ANetResearch/anet-org/internal/config"
 	"github.com/ANetResearch/anet-org/internal/ratelimit"
 )
 
-// Caller is who is calling. AID is empty for a local call.
+// Caller is who is calling. AID is empty for a local call. Via is how the
+// call was made: "" for a call of the member's own node, ViaAgent for a call
+// that the organisation's agent made for the member (X-ANet-Via: agent).
 type Caller struct {
 	AID   string
 	Local bool
+	Via   string
+}
+
+// ViaAgent is the X-ANet-Via value of a call made by the organisation's
+// agent for the member it serves. Every write made so is stored with it.
+const ViaAgent = "agent"
+
+// viaShown is how a write made by the organisation's agent is marked for
+// readers.
+const viaShown = "(via the organisation agent)"
+
+// shownVia is the reader's mark for a stored via value, or "".
+func shownVia(v string) string {
+	if v == ViaAgent {
+		return viaShown
+	}
+	return ""
 }
 
 // Service holds the state and implements the capabilities.
@@ -38,7 +56,6 @@ type Service struct {
 	lim     *ratelimit.Limiter
 	admins  map[string]bool
 	staff   map[string]bool
-	asst    *assistant.Pool
 	log     *slog.Logger
 	caps    map[string]capability
 	ordered []string
@@ -46,9 +63,8 @@ type Service struct {
 
 // Options are the optional parts of a Service.
 type Options struct {
-	Now       func() time.Time
-	Assistant *assistant.Pool
-	Logger    *slog.Logger
+	Now    func() time.Time
+	Logger *slog.Logger
 }
 
 // New returns a Service over an open database.
@@ -60,7 +76,7 @@ func New(cfg *config.Config, db *sql.DB, o Options) *Service {
 		o.Logger = slog.New(slog.NewJSONHandler(discard{}, nil))
 	}
 	s := &Service{cfg: cfg, db: db, now: o.Now, lim: ratelimit.New(o.Now),
-		admins: set(cfg.Admins), staff: set(cfg.Staff), asst: o.Assistant, log: o.Logger}
+		admins: set(cfg.Admins), staff: set(cfg.Staff), log: o.Logger}
 	s.register()
 	if err := s.fillSkeletons(context.Background()); err != nil {
 		s.log.Error("cannot fill handle skeletons", "err", err.Error())
@@ -93,6 +109,11 @@ type capability struct {
 	family string
 	access access
 	fn     func(ctx context.Context, c *call) (any, error)
+	// agentTool admits calls made by the organisation's agent for a member
+	// (X-ANet-Via: agent). gen-config declares exactly these capabilities
+	// "agent_tool": true; the check here holds even if the node's
+	// configuration said otherwise.
+	agentTool bool
 }
 
 // call is one invocation as a handler sees it.
@@ -102,43 +123,81 @@ type call struct {
 	raw    json.RawMessage
 }
 
+// via is the via value to store with a write of this call.
+func (c *call) via() string {
+	if c.caller.Via == ViaAgent {
+		return ViaAgent
+	}
+	return ""
+}
+
 func (s *Service) register() {
 	s.caps = map[string]capability{
-		"org.info":    {"read", anyone, s.orgInfo},
-		"org.join":    {"join", anyone, s.orgJoin},
-		"org.me":      {"read", memberOnly, s.orgMe},
-		"org.leave":   {"identity", memberOnly, s.orgLeave},
-		"org.rename":  {"identity", memberOnly, s.orgRename},
-		"org.members": {"read", memberOnly, s.orgMembers},
+		"org.info":    {"read", anyone, s.orgInfo, true},
+		"org.join":    {"join", anyone, s.orgJoin, false},
+		"org.admit":   {"admit", anyone, s.orgAdmit, false},
+		"org.me":      {"read", memberOnly, s.orgMe, true},
+		"org.leave":   {"identity", memberOnly, s.orgLeave, false},
+		"org.rename":  {"identity", memberOnly, s.orgRename, false},
+		"org.members": {"read", memberOnly, s.orgMembers, true},
 
-		"msg.send":  {"msg", memberOnly, s.msgSend},
-		"msg.inbox": {"read", memberOnly, s.msgInbox},
-		"msg.ack":   {"ack", memberOnly, s.msgAck},
+		"msg.send":  {"msg", memberOnly, s.msgSend, true},
+		"msg.inbox": {"read", memberOnly, s.msgInbox, true},
+		"msg.ack":   {"ack", memberOnly, s.msgAck, true},
 
-		"board.post":    {"write", memberOnly, s.boardPost},
-		"board.list":    {"read", memberOnly, s.boardList},
-		"board.claim":   {"write", memberOnly, s.boardClaim},
-		"board.done":    {"write", memberOnly, s.boardDone},
-		"board.comment": {"write", memberOnly, s.boardComment},
-		"board.delete":  {"write", memberOnly, s.boardDelete},
+		"board.post":    {"write", memberOnly, s.boardPost, true},
+		"board.list":    {"read", memberOnly, s.boardList, true},
+		"board.claim":   {"write", memberOnly, s.boardClaim, true},
+		"board.done":    {"write", memberOnly, s.boardDone, true},
+		"board.comment": {"write", memberOnly, s.boardComment, true},
+		"board.delete":  {"write", memberOnly, s.boardDelete, true},
 
-		"research.project.create": {"write", memberOnly, s.projectCreate},
-		"research.project.list":   {"read", memberOnly, s.projectList},
-		"research.note.add":       {"write", memberOnly, s.noteAdd},
-		"research.note.list":      {"read", memberOnly, s.noteList},
-		"research.note.delete":    {"write", memberOnly, s.noteDelete},
+		"research.project.create": {"write", memberOnly, s.projectCreate, true},
+		"research.project.list":   {"read", memberOnly, s.projectList, true},
+		"research.note.add":       {"write", memberOnly, s.noteAdd, true},
+		"research.note.list":      {"read", memberOnly, s.noteList, true},
+		"research.note.delete":    {"write", memberOnly, s.noteDelete, true},
 
-		"ask": {"ask", memberOnly, s.ask},
+		"ask": {"ask", memberOnly, s.ask, false},
 
-		"admin.invite.create": {"admin", adminOnly, s.adminInviteCreate},
-		"admin.invite.revoke": {"admin", adminOnly, s.adminInviteRevoke},
-		"admin.invite.list":   {"admin", adminOnly, s.adminInviteList},
-		"admin.member.remove": {"admin", adminOnly, s.adminMemberRemove},
+		"admin.invite.create": {"admin", adminOnly, s.adminInviteCreate, false},
+		"admin.invite.revoke": {"admin", adminOnly, s.adminInviteRevoke, false},
+		"admin.invite.list":   {"admin", adminOnly, s.adminInviteList, false},
+		"admin.member.remove": {"admin", adminOnly, s.adminMemberRemove, false},
 	}
 	for id := range s.caps {
 		s.ordered = append(s.ordered, id)
 	}
 	sort.Strings(s.ordered)
+}
+
+// Internal reports whether id is a capability that only this node itself
+// calls (org.admit): it is declared "internal": true to the node, never put
+// on the card, and not listed by org.info.
+func Internal(id string) bool { return id == "org.admit" }
+
+// PublicCapabilities lists the capability ids that org.info names: all but
+// the internal ones.
+func (s *Service) PublicCapabilities() []string {
+	var out []string
+	for _, id := range s.ordered {
+		if !Internal(id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// AgentTools lists the capabilities that the organisation's agent may call
+// for a member, sorted.
+func (s *Service) AgentTools() []string {
+	var out []string
+	for _, id := range s.ordered {
+		if s.caps[id].agentTool {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // Capabilities lists the capability ids the service implements.
@@ -161,6 +220,19 @@ func (s *Service) Dispatch(ctx context.Context, id string, caller Caller, raw js
 		}
 	} else if caller.AID == "" {
 		return nil, errCallerRequired()
+	}
+	switch caller.Via {
+	case "":
+	case ViaAgent:
+		// Only the capabilities declared agent_tool may be called by the
+		// organisation's agent; joining, leaving, renaming and every
+		// administrator capability stay with the member's own node.
+		if caller.Local || !cp.agentTool {
+			return nil, newErr(http.StatusForbidden, CodeAgentNotPermitted,
+				"The organisation's agent may not call %s; the member's own node must.", id)
+		}
+	default:
+		return nil, newErr(http.StatusBadRequest, CodeBadVia, "The via header names an unknown kind of call.")
 	}
 	who := caller.AID
 	if caller.Local {

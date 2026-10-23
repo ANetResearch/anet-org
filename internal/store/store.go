@@ -104,12 +104,6 @@ CREATE TABLE IF NOT EXISTS notes (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS notes_project ON notes(project_id, id);
-CREATE TABLE IF NOT EXISTS usage (
-  day     TEXT NOT NULL,
-  aid     TEXT NOT NULL,
-  tokens  INTEGER NOT NULL,
-  PRIMARY KEY (day, aid)
-);
 `
 
 // Open opens (creating if needed) the database at path with WAL, foreign
@@ -174,6 +168,10 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 		}
+	}
+	// 0.3.9: the built-in assistant and its token accounting are gone.
+	if _, err := db.Exec(`DROP TABLE IF EXISTS usage`); err != nil {
+		return err
 	}
 	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS members_skeleton ON members(skeleton);
 		CREATE INDEX IF NOT EXISTS held_skeleton ON held_handles(skeleton);

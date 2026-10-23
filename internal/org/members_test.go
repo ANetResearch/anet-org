@@ -10,7 +10,7 @@ import (
 )
 
 func TestInfoForAnyone(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	m := e.ok(aidEve, "org.info", nil)
 	if str(m["name"]) != "Example Lab" || str(m["invite_format"]) != "LAB-XXXX-XXXX" {
 		t.Fatalf("info: %v", m)
@@ -29,7 +29,7 @@ func TestInfoForAnyone(t *testing.T) {
 }
 
 func TestJoinHappyPathAndTolerantCode(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	code := e.invite(InviteOptions{Uses: 5})
 	typed := strings.ToLower(strings.ReplaceAll(code, "-", " "))
 	m := e.ok(aidAlice, "org.join", map[string]any{"code": typed, "handle": "@Alice"})
@@ -44,7 +44,7 @@ func TestJoinHappyPathAndTolerantCode(t *testing.T) {
 }
 
 func TestJoinInviteFailures(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	ctx := context.Background()
 
 	e.fail(aidAlice, "org.join", map[string]any{"code": "LAB-0000-0000", "handle": "alice"}, CodeInviteUnknown)
@@ -73,7 +73,7 @@ func TestJoinInviteFailures(t *testing.T) {
 }
 
 func TestJoinInviteOptionsBounds(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	ctx := context.Background()
 	for _, o := range []InviteOptions{{ExpiresDays: 91}, {ExpiresDays: -1}, {Uses: 10001}, {Kind: "god"},
 		{Note: strings.Repeat("n", 201)}} {
@@ -95,7 +95,7 @@ func TestJoinInviteOptionsBounds(t *testing.T) {
 }
 
 func TestInviteStoresOnlyHash(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	code := e.invite(InviteOptions{})
 	body := strings.ReplaceAll(strings.TrimPrefix(code, "LAB-"), "-", "")
 	var n int
@@ -109,7 +109,7 @@ func TestInviteStoresOnlyHash(t *testing.T) {
 }
 
 func TestJoinRatePerCode(t *testing.T) {
-	e := newEnv(t, func(c *config.Config) { c.JoinsPerMinutePerCode = 3 }, nil)
+	e := newEnv(t, func(c *config.Config) { c.JoinsPerMinutePerCode = 3 })
 	code := e.invite(InviteOptions{})
 	for i := 0; i < 3; i++ {
 		aid := "aid-student-000000" + string(rune('a'+i))
@@ -124,7 +124,7 @@ func TestJoinRatePerCode(t *testing.T) {
 }
 
 func TestJoinAttemptsPerCallerLimited(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	for i := 0; i < 10; i++ {
 		e.fail(aidEve, "org.join", map[string]any{"code": "LAB-0000-000" + string(rune('0'+i)), "handle": "eve"}, CodeInviteUnknown)
 	}
@@ -135,7 +135,7 @@ func TestHandleRules(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) {
 		c.Rates["join"] = config.Rate{PerMinute: 1000, PerDay: 1000}
 		c.FailedJoinsPerCaller = 1000
-	}, nil)
+	})
 	code := e.invite(InviteOptions{})
 	for _, h := range []string{"a", "1abc", "ab cd", "ab!c", "x" + strings.Repeat("y", 24), "aliсe", "_abc", ""} {
 		_, err := e.call(aidAlice, "org.join", map[string]any{"code": code, "handle": h})
@@ -153,7 +153,7 @@ func TestHandleRules(t *testing.T) {
 }
 
 func TestRenameOncePerWeekAndHold(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	e.join(aidAlice, "alice")
 	e.join(aidBob, "bob")
 	e.fail(aidAlice, "org.rename", map[string]any{"handle": "bob"}, CodeHandleTaken)
@@ -173,7 +173,7 @@ func TestRenameOncePerWeekAndHold(t *testing.T) {
 }
 
 func TestLeaveNeedsConfirmAndCleansUp(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	e.join(aidAlice, "alice")
 	e.join(aidBob, "bob")
 	e.ok(aidBob, "msg.send", map[string]any{"to": "alice", "text": "hello"})
@@ -194,7 +194,7 @@ func TestLeaveNeedsConfirmAndCleansUp(t *testing.T) {
 }
 
 func TestNonMemberRefused(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	for _, c := range []string{"org.me", "org.leave", "org.rename", "org.members", "msg.send", "msg.inbox", "msg.ack",
 		"board.post", "board.list", "board.claim", "board.done", "board.comment", "research.project.create",
 		"research.project.list", "research.note.add", "research.note.list", "ask", "board.delete", "research.note.delete"} {
@@ -203,12 +203,12 @@ func TestNonMemberRefused(t *testing.T) {
 }
 
 func TestMissingCallerAndLocalAdmin(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	e.fail("", "org.info", nil, CodeCallerRequired)
 	e.fail("", "admin.invite.list", nil, CodeCallerRequired)
 	e.fail("", "org.join", map[string]any{"code": "x", "handle": "alice"}, CodeCallerRequired)
 
-	l := newEnv(t, func(c *config.Config) { c.AllowLocalAdmin = true }, nil)
+	l := newEnv(t, func(c *config.Config) { c.AllowLocalAdmin = true })
 	l.ok("", "org.info", nil)
 	m := l.ok("", "admin.invite.create", map[string]any{"uses": 2})
 	if !strings.HasPrefix(str(m["code"]), "LAB-") {
@@ -219,7 +219,7 @@ func TestMissingCallerAndLocalAdmin(t *testing.T) {
 }
 
 func TestMembersDirectory(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	e.join(aidAlice, "alice")
 	e.join(aidBob, "bob")
 	e.join(aidStaff, "prof-li")
@@ -246,7 +246,7 @@ func TestMembersDirectory(t *testing.T) {
 }
 
 func TestArgumentDecoding(t *testing.T) {
-	e := newEnv(t, nil, nil)
+	e := newEnv(t, nil)
 	e.join(aidAlice, "alice")
 	e.fail(aidAlice, "org.me", map[string]any{"as": aidBob}, CodeUnknownField)
 	e.fail(aidAlice, "msg.send", `{"to": 5, "text": "x"}`, CodeBadArgs)

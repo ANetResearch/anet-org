@@ -255,8 +255,20 @@ func (s *Service) orgInfo(ctx context.Context, c *call) (any, error) {
 		"invite_format": s.cfg.Org.Prefix + "-XXXX-XXXX",
 		"stats":         map[string]any{"members": n},
 		"caller":        you,
-		"capabilities":  s.Capabilities(),
+		"capabilities":  s.PublicCapabilities(),
 	}, nil
+}
+
+// --- org.admit ---
+
+// orgAdmit answers the node's admission question for a text task: whether
+// the caller is an active member. The node calls it with the peer as
+// X-ANet-Caller (inbound.admit) and admits on {"admit": true} only. The
+// arguments are ignored, and the reply says nothing but yes or no, so the
+// capability reveals no more than org.info already tells any caller about
+// itself. It is internal to the node and never listed on the card.
+func (s *Service) orgAdmit(_ context.Context, c *call) (any, error) {
+	return map[string]bool{"admit": c.member != nil}, nil
 }
 
 // --- org.join ---

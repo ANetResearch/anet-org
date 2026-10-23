@@ -39,6 +39,9 @@ const (
 	HeaderCaller     = "X-ANet-Caller"
 	HeaderCall       = "X-ANet-Call"
 	HeaderCapability = "X-ANet-Capability"
+	// HeaderVia is "agent" for a call that the organisation's agent makes
+	// for the member named in X-ANet-Caller (anet's CallServiceAs).
+	HeaderVia = "X-ANet-Via"
 )
 
 // MaxBodyBytes bounds a request body. The daemon's own max_args_bytes is
@@ -130,10 +133,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	capID := strings.TrimPrefix(r.URL.Path, "/v1/")
 	status, code := 0, ""
 	caller := r.Header.Get(HeaderCaller)
+	via := r.Header.Get(HeaderVia)
 	defer func() {
 		// One line per call: no arguments, no reply, no message text.
-		s.log.Info("call", "cap", logSafe(capID), "caller", logSafe(caller), "call_id", logSafe(r.Header.Get(HeaderCall)),
-			"status", status, "code", code, "ms", time.Since(started).Milliseconds())
+		s.log.Info("call", "cap", logSafe(capID), "caller", logSafe(caller), "via", logSafe(via),
+			"call_id", logSafe(r.Header.Get(HeaderCall)), "status", status, "code", code, "ms", time.Since(started).Milliseconds())
 	}()
 	refuse := func(e *org.Error) {
 		status, code = e.Status, e.Code
@@ -171,7 +175,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Message: "The capability header does not match the request path."})
 		return
 	}
-	c := org.Caller{AID: caller}
+	c := org.Caller{AID: caller, Via: via}
 	if caller == "" {
 		c.Local = true
 	} else if !config.ValidAID(caller) {
@@ -324,7 +328,7 @@ func (s *Server) HTTPServer() *http.Server {
 		ConnContext:       s.ConnContext,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      10 * time.Minute, // ask may wait on an upstream
+		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    16 << 10,
 		ErrorLog:          nil,

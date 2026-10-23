@@ -64,8 +64,6 @@ type Config struct {
 	JoinsPerMinutePerCode int `json:"joins_per_minute_per_code,omitempty"`
 	// MaxConcurrent bounds the calls the server handles at once.
 	MaxConcurrent int `json:"max_concurrent,omitempty"`
-
-	Assistant Assistant `json:"assistant"`
 }
 
 // Org describes the organisation.
@@ -83,62 +81,8 @@ type Rate struct {
 	PerDay    int `json:"per_day"`
 }
 
-// Assistant configures the ask capability. With no upstream the assistant
-// is not configured and ask says so.
-type Assistant struct {
-	// Upstreams are OpenAI-compatible chat-completions endpoints, tried in
-	// the order listed; a busy or failing one is skipped for a cool-down.
-	Upstreams []Upstream `json:"upstreams,omitempty"`
-	// MemberDailyTokens and GlobalDailyTokens are the daily (UTC) token
-	// budgets, counted from the usage the API reports. Absent means the
-	// default; 0 means unlimited.
-	MemberDailyTokens *int64 `json:"member_daily_tokens,omitempty"`
-	GlobalDailyTokens *int64 `json:"global_daily_tokens,omitempty"`
-	MaxSteps          int    `json:"max_steps,omitempty"`
-	MaxOutputTokens   int    `json:"max_output_tokens,omitempty"`
-	// TimeoutSeconds bounds one request to an upstream.
-	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
-	// QueueSize bounds the ask requests waiting for an upstream slot, and
-	// QueueWaitSeconds how long one waits; beyond either, ask is refused
-	// with busy.
-	QueueSize        int `json:"queue_size,omitempty"`
-	QueueWaitSeconds int `json:"queue_wait_seconds,omitempty"`
-	// QuotaCooldownSeconds is how long an upstream that reported an
-	// exhausted quota is skipped when it names no reset time.
-	QuotaCooldownSeconds int `json:"quota_cooldown_seconds,omitempty"`
-	// BackoffBaseSeconds and BackoffMaxSeconds shape the exponential
-	// cool-down after a transient 429, a 5xx or a timeout.
-	BackoffBaseSeconds int `json:"backoff_base_seconds,omitempty"`
-	BackoffMaxSeconds  int `json:"backoff_max_seconds,omitempty"`
-}
-
-// Upstream is one chat-completions endpoint.
-type Upstream struct {
-	Name           string `json:"name"`
-	BaseURL        string `json:"base_url"`
-	Model          string `json:"model,omitempty"`
-	APIKeyFile     string `json:"api_key_file"`
-	MaxConcurrency int    `json:"max_concurrency,omitempty"`
-}
-
-// Configured reports whether at least one upstream is declared.
-func (a Assistant) Configured() bool { return len(a.Upstreams) > 0 }
-
-// MemberBudget and GlobalBudget are the effective budgets; 0 is unlimited.
-func (a Assistant) MemberBudget() int64 { return deref(a.MemberDailyTokens, DefaultMemberDailyTokens) }
-func (a Assistant) GlobalBudget() int64 { return deref(a.GlobalDailyTokens, DefaultGlobalDailyTokens) }
-
-func deref(p *int64, def int64) int64 {
-	if p == nil {
-		return def
-	}
-	return *p
-}
-
 // Defaults.
 const (
-	DefaultModel             = "deepseek-v4-1-flash-261017"
-	DefaultMaxConcurrency    = 8
 	DefaultMailboxMax        = 500
 	DefaultMailboxPerSender  = 50
 	DefaultFailedJoinsCaller = 10
@@ -146,16 +90,6 @@ const (
 	DefaultContentBytes      = 5 << 20
 	DefaultJoinsPerCode      = 30
 	DefaultMaxConcurrent     = 64
-	DefaultMemberDailyTokens = 2_000_000
-	DefaultGlobalDailyTokens = 200_000_000
-	DefaultMaxSteps          = 6
-	DefaultMaxOutputTokens   = 4096
-	DefaultTimeoutSeconds    = 90
-	DefaultQueueSize         = 64
-	DefaultQueueWaitSeconds  = 30
-	DefaultQuotaCooldown     = 3600
-	DefaultBackoffBase       = 30
-	DefaultBackoffMax        = 900
 )
 
 // DefaultRates are the per-member limits of each capability family.
@@ -166,6 +100,7 @@ var DefaultRates = map[string]Rate{
 	"write":    {PerMinute: 30, PerDay: 1000},
 	"ack":      {PerMinute: 60, PerDay: 5000},
 	"ask":      {PerMinute: 6, PerDay: 100},
+	"admit":    {PerMinute: 600, PerDay: 50000},
 	"admin":    {PerMinute: 60, PerDay: 2000},
 	"identity": {PerMinute: 10, PerDay: 50},
 }
@@ -195,6 +130,9 @@ func Load(path string) (*Config, error) {
 
 // Parse decodes a configuration, applies defaults and checks it.
 func Parse(raw []byte) (*Config, error) {
+	if err := checkRemoved(raw); err != nil {
+		return nil, err
+	}
 	var c Config
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -209,6 +147,27 @@ func Parse(raw []byte) (*Config, error) {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// removedKeys are top-level keys of earlier versions that this one no
+// longer reads. A file that still has one is refused with what to do, so
+// that an operator does not believe a removed setting still applies.
+var removedKeys = map[string]string{
+	"assistant": "the built-in assistant was removed in 0.3.9: the organisation's agent, run by the node, answers requests now. " +
+		"Delete the assistant block; the model key files belong to the node's auto_reply.model_proxy (see anet-org gen-config)",
+}
+
+func checkRemoved(raw []byte) error {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(raw, &top) != nil {
+		return nil // the strict decode reports the problem
+	}
+	for k, why := range removedKeys {
+		if _, ok := top[k]; ok {
+			return fmt.Errorf("config: %s: %s", k, why)
+		}
+	}
+	return nil
 }
 
 func (c *Config) applyDefaults() {
@@ -244,31 +203,6 @@ func (c *Config) applyDefaults() {
 		rates[k] = v
 	}
 	c.Rates = rates
-	a := &c.Assistant
-	for i := range a.Upstreams {
-		u := &a.Upstreams[i]
-		u.BaseURL = strings.TrimRight(strings.TrimSpace(u.BaseURL), "/")
-		if u.Model == "" {
-			u.Model = DefaultModel
-		}
-		if u.MaxConcurrency <= 0 {
-			u.MaxConcurrency = DefaultMaxConcurrency
-		}
-	}
-	setDefault(&a.QueueSize, DefaultQueueSize)
-	setDefault(&a.QueueWaitSeconds, DefaultQueueWaitSeconds)
-	setDefault(&a.QuotaCooldownSeconds, DefaultQuotaCooldown)
-	setDefault(&a.BackoffBaseSeconds, DefaultBackoffBase)
-	setDefault(&a.BackoffMaxSeconds, DefaultBackoffMax)
-	if a.MaxSteps <= 0 {
-		a.MaxSteps = DefaultMaxSteps
-	}
-	if a.MaxOutputTokens <= 0 {
-		a.MaxOutputTokens = DefaultMaxOutputTokens
-	}
-	if a.TimeoutSeconds <= 0 {
-		a.TimeoutSeconds = DefaultTimeoutSeconds
-	}
 }
 
 func setDefault(p *int, def int) {
@@ -334,39 +268,7 @@ func (c *Config) check() error {
 	if c.JoinsPerMinutePerCode > 1000 {
 		return errors.New("config: joins_per_minute_per_code is above 1000")
 	}
-	a := c.Assistant
-	names := map[string]bool{}
-	for i, u := range a.Upstreams {
-		if u.Name == "" || len(u.Name) > 32 || names[u.Name] {
-			return fmt.Errorf("config: assistant.upstreams[%d]: a unique name of at most 32 bytes is required", i)
-		}
-		names[u.Name] = true
-		if !strings.HasPrefix(u.BaseURL, "https://") && !isLoopbackHTTP(u.BaseURL) {
-			return fmt.Errorf("config: assistant.upstreams[%d] (%s): base_url must be https (or http on a loopback address)", i, u.Name)
-		}
-		if u.APIKeyFile == "" {
-			return fmt.Errorf("config: assistant.upstreams[%d] (%s): api_key_file is required", i, u.Name)
-		}
-		if u.MaxConcurrency > 256 {
-			return fmt.Errorf("config: assistant.upstreams[%d] (%s): max_concurrency is above 256", i, u.Name)
-		}
-	}
-	if (a.MemberDailyTokens != nil && *a.MemberDailyTokens < 0) || (a.GlobalDailyTokens != nil && *a.GlobalDailyTokens < 0) {
-		return errors.New("config: assistant token budgets must not be negative (0 is unlimited)")
-	}
-	if a.MaxSteps > 12 {
-		return errors.New("config: assistant.max_steps is above 12")
-	}
 	return nil
-}
-
-func isLoopbackHTTP(u string) bool {
-	for _, p := range []string{"http://127.0.0.1:", "http://127.0.0.1/", "http://[::1]:", "http://localhost:"} {
-		if strings.HasPrefix(u, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // ValidAID is a loose syntax check for an AID: 8 to 256 printable ASCII

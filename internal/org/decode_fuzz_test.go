@@ -19,7 +19,7 @@ func FuzzDispatchArgs(f *testing.F) {
 			c.Rates[k] = config.Rate{PerMinute: 1 << 30, PerDay: 1 << 30}
 		}
 		c.JoinsPerMinutePerCode = 1000
-	}, nil)
+	})
 	ctx := context.Background()
 	if _, _, err := e.svc.CreateInvite(ctx, "operator", InviteOptions{}); err != nil {
 		f.Fatal(err)

@@ -21,9 +21,6 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
 
-// ErrorCode returns the code and the message (for the assistant's tools).
-func (e *Error) ErrorCode() (string, string) { return e.Code, e.Message }
-
 func newErr(status int, code, format string, a ...any) *Error {
 	return &Error{Code: code, Status: status, Message: fmt.Sprintf(format, a...)}
 }
@@ -73,18 +70,17 @@ const (
 	CodeProjectExists      = "project_exists"
 	CodeMemberUnknown      = "member_unknown"
 	CodeRateLimited        = "rate_limited"
-	CodeBudgetExhausted    = "budget_exhausted"
-	CodeAssistantFailed    = "assistant_failed"
 	CodeInternal           = "internal_error"
 	CodeBusy               = "busy"
 	CodeInvalidValue       = "invalid_value"
 	CodeLimitReached       = "limit_reached"
-	CodeAssistantOff       = "assistant_unavailable"
 	CodeMailboxFull        = "mailbox_full"
 	CodeTooManyUnread      = "too_many_unread"
 	CodeQuotaExceeded      = "quota_exceeded"
 	CodeNoteUnknown        = "note_unknown"
-	CodeForwardRefused     = "forward_refused"
+	CodeAskMoved           = "ask_moved"
+	CodeAgentNotPermitted  = "agent_not_permitted"
+	CodeBadVia             = "bad_via"
 )
 
 func errCallerRequired() *Error {

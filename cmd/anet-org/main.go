@@ -33,7 +33,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/ANetResearch/anet-org/internal/assistant"
 	"github.com/ANetResearch/anet-org/internal/catalog"
 	"github.com/ANetResearch/anet-org/internal/config"
 	"github.com/ANetResearch/anet-org/internal/org"
@@ -129,9 +128,8 @@ func newLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
-// openService opens the database and builds the service; with assistant it
-// also reads the upstream keys.
-func openService(cfg *config.Config, log *slog.Logger, withAssistant bool) (*org.Service, *sql.DB, error) {
+// openService opens the database and builds the service.
+func openService(cfg *config.Config, log *slog.Logger) (*org.Service, *sql.DB, error) {
 	dbPath, err := config.ExpandPath(cfg.Database)
 	if err != nil {
 		return nil, nil, fmt.Errorf("database: %w", err)
@@ -140,38 +138,7 @@ func openService(cfg *config.Config, log *slog.Logger, withAssistant bool) (*org
 	if err != nil {
 		return nil, nil, err
 	}
-	var pool *assistant.Pool
-	if withAssistant {
-		pool, err = buildPool(cfg, log)
-		if err != nil {
-			db.Close()
-			return nil, nil, err
-		}
-	}
-	return org.New(cfg, db, org.Options{Assistant: pool, Logger: log}), db, nil
-}
-
-func buildPool(cfg *config.Config, log *slog.Logger) (*assistant.Pool, error) {
-	a := cfg.Assistant
-	var ups []assistant.UpstreamConfig
-	for _, u := range a.Upstreams {
-		key, err := config.ReadSecret(u.APIKeyFile, 8)
-		if err != nil {
-			return nil, fmt.Errorf("assistant upstream %s: api_key_file: %w", u.Name, err)
-		}
-		ups = append(ups, assistant.UpstreamConfig{Name: u.Name, BaseURL: u.BaseURL, Model: u.Model, APIKey: key,
-			MaxConcurrency: u.MaxConcurrency})
-	}
-	return assistant.NewPool(assistant.PoolConfig{
-		Upstreams:     ups,
-		Timeout:       time.Duration(a.TimeoutSeconds) * time.Second,
-		QueueSize:     a.QueueSize,
-		QueueWait:     time.Duration(a.QueueWaitSeconds) * time.Second,
-		QuotaCooldown: time.Duration(a.QuotaCooldownSeconds) * time.Second,
-		BackoffBase:   time.Duration(a.BackoffBaseSeconds) * time.Second,
-		BackoffMax:    time.Duration(a.BackoffMaxSeconds) * time.Second,
-		Logger:        log,
-	}), nil
+	return org.New(cfg, db, org.Options{Logger: log}), db, nil
 }
 
 func cmdServe(args []string) error {
@@ -188,7 +155,7 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("token_file: %w", err)
 	}
-	svc, db, err := openService(cfg, log, true)
+	svc, db, err := openService(cfg, log)
 	if err != nil {
 		return err
 	}
@@ -217,7 +184,7 @@ func cmdServe(args []string) error {
 		log.Warn("allow_local_admin is on: calls without a caller are treated as the operator for admin.* and org.info")
 	}
 	log.Info("serving", "socket", sock, "org", cfg.Org.Name, "version", server.Version,
-		"assistant", cfg.Assistant.Configured(), "admins", len(cfg.Admins))
+		"admins", len(cfg.Admins))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	errc := make(chan error, 1)
@@ -350,7 +317,7 @@ func cmdAdmin(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	svc, db, err := openService(cfg, slog.New(slog.NewJSONHandler(io.Discard, nil)), false)
+	svc, db, err := openService(cfg, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	if err != nil {
 		return err
 	}

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ANetResearch/anet-org/internal/assistant"
 	"github.com/ANetResearch/anet-org/internal/config"
 	"github.com/ANetResearch/anet-org/internal/store"
 )
@@ -52,7 +51,7 @@ func baseConfig(t testing.TB) *config.Config {
 	return cfg
 }
 
-func newEnv(t testing.TB, mut func(*config.Config), pool *assistant.Pool) *env {
+func newEnv(t testing.TB, mut func(*config.Config)) *env {
 	t.Helper()
 	cfg := baseConfig(t)
 	if mut != nil {
@@ -64,7 +63,7 @@ func newEnv(t testing.TB, mut func(*config.Config), pool *assistant.Pool) *env {
 	}
 	t.Cleanup(func() { db.Close() })
 	clk := &clock{t: time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC)}
-	svc := New(cfg, db, Options{Now: clk.now, Assistant: pool})
+	svc := New(cfg, db, Options{Now: clk.now})
 	return &env{t: t, svc: svc, cfg: cfg, clk: clk}
 }
 
