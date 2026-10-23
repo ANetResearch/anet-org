@@ -115,33 +115,8 @@ for _ in $(seq 1 60); do curl -sf -m 2 "$HUB_URL/healthz" >/dev/null 2>&1 && bre
 curl -sf -m 5 "$HUB_URL/healthz" >/dev/null || die "the local hub did not start: $(tail -3 "$R/hub.log")"
 pass "local test hub on $HUB_URL"
 
-# --- a fake chat-completions upstream for ask (loopback, no network) --------
-LLM_PORT=$((BASE + 7))
-cat >"$R/fake-llm.py" <<'PY'
-import json, sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
-class H(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-    def do_POST(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        self.rfile.read(n)
-        ok = self.headers.get("Authorization") == "Bearer e2e-fake-upstream-key"
-        body = {"choices": [{"message": {"role": "assistant", "content": "The assistant answered through anet.",
-                "reasoning_content": "hidden"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}}
-        out = json.dumps(body if ok else {"error": {"code": "AuthenticationError"}}).encode()
-        self.send_response(200 if ok else 401)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(out)))
-        self.end_headers()
-        self.wfile.write(out)
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
-PY
-( cd "$R" && exec setsid python3 -I "$R/fake-llm.py" "$LLM_PORT" ) >"$R/fake-llm.log" 2>&1 </dev/null &
-PIDS+=($!)
-
 # --- anet-org -------------------------------------------------------------
 mkdir -m 700 "$R/orgsvc"
-( umask 077; echo e2e-fake-upstream-key >"$R/orgsvc/llm.key" )
 TOKEN="$R/orgsvc/token"
 "$ORG" gen-token "$TOKEN" 2>/dev/null
 cat >"$R/orgsvc/anet-org.json" <<EOF
@@ -149,8 +124,7 @@ cat >"$R/orgsvc/anet-org.json" <<EOF
   "org": {"name": "Example Lab", "prefix": "LAB", "description": "End-to-end test organisation."},
   "socket": "$R/run/backend.sock",
   "token_file": "$TOKEN",
-  "database": "$R/orgsvc/org.db",
-  "assistant": {"upstreams": [{"name": "fake", "base_url": "http://127.0.0.1:$LLM_PORT", "api_key_file": "$R/orgsvc/llm.key"}]}
+  "database": "$R/orgsvc/org.db"
 }
 EOF
 ( cd "$R" && exec setsid "$ORG" serve --config "$R/orgsvc/anet-org.json" ) >"$R/anet-org.log" 2>&1 </dev/null &
@@ -168,7 +142,9 @@ for n in org alice bob; do
   mkdir -p "$R/$n/.anet/modules/a2a"
   printf '127.0.0.1:%s\n' "${A2A[$n]}" >"$R/$n/.anet/modules/a2a/a2a_addr.txt"
 done
-"$ORG" gen-config --config "$R/orgsvc/anet-org.json" >"$R/blocks.json"
+# The node blocks for the organisation's agent (inbound.admit, auto_reply)
+# need anet 0.3.9 with a runner; this test drives the capabilities only.
+"$ORG" gen-config --config "$R/orgsvc/anet-org.json" --no-agent >"$R/blocks.json"
 python3 - "$R/org/.anet/config.json" "$R/blocks.json" <<'PY'
 import json, sys
 path, blocks = sys.argv[1], json.load(open(sys.argv[2]))
@@ -202,8 +178,9 @@ pass "three nodes registered on the local hub (org ${AID[org]:0:24}…)"
 
 # The organisation's card on the hub lists the public capabilities.
 card=$(curl -s -m 10 "$HUB_URL/agents/${AID[org]}")
-if printf '%s' "$card" | grep -q 'org.join' && ! printf '%s' "$card" | grep -q 'admin.invite.create'; then
-  pass "the hub's entry lists org.join and not the allow_only admin capabilities"
+if printf '%s' "$card" | grep -q 'org.join' && ! printf '%s' "$card" | grep -q 'admin.invite.create' \
+  && ! printf '%s' "$card" | grep -q 'org.admit'; then
+  pass "the hub's entry lists org.join, and neither the allow_only admin capabilities nor the internal org.admit"
 else
   fail "the hub's entry: $(printf '%s' "$card" | head -c 400)"
 fi
@@ -301,10 +278,32 @@ IFS='|' read -r st rs obs <<<"$(call alice msg.inbox '{}')"
   || fail "alice inbox: state=$st obs=$obs"
 
 IFS='|' read -r st rs obs <<<"$(call bob ask '{"text":"What is new for me?"}')"
-if [ "$st" = completed ] && printf '%s' "$obs" | grep -q '"untrusted_answer":"The assistant answered through anet' && ! printf '%s' "$obs" | grep -q hidden; then
-  pass "bob's ask was answered by the configured upstream (content only, no reasoning)"
+[ "$st" != completed ] && [ "$rs" = ask_moved ] && pass "ask answers ask_moved: requests are text tasks now" \
+  || fail "ask: state=$st reason=$rs obs=$obs"
+
+IFS='|' read -r st rs obs <<<"$(call bob org.admit '{}')"
+[ "$st" != completed ] && pass "org.admit cannot be called from the network ($st, ${rs:-no reason})" \
+  || fail "org.admit from the network: state=$st obs=$obs"
+
+IFS='|' read -r st rs obs <<<"$(call alice board.post '{"title":"Help wanted: CUDA build","tags":["help-wanted","cuda"]}')"
+ITEM=$(printf '%s' "$obs" | python3 -c 'import sys,json
+try: print(json.loads(sys.stdin.read())["item"]["id"])
+except Exception: print("")')
+[ "$st" = completed ] && [ -n "$ITEM" ] && pass "alice posted a help request (item $ITEM)" || fail "board.post: state=$st reason=$rs obs=$obs"
+
+IFS='|' read -r st rs obs <<<"$(call bob board.claim "{\"id\":${ITEM:-0}}")"
+[ "$st" = completed ] && printf '%s' "$obs" | grep -q '"notified":\["alice"\]' && pass "bob claimed it and alice was notified" \
+  || fail "board.claim: state=$st reason=$rs obs=$obs"
+
+IFS='|' read -r st rs obs <<<"$(call alice msg.inbox '{}')"
+if [ "$st" = completed ] && printf '%s' "$obs" | python3 -c '
+import sys, json
+m = json.loads(sys.stdin.read())["messages"]
+assert len(m) == 1 and m[0]["from"] == "board" and m[0]["from_kind"] == "notification"
+assert "@bob claimed your board item" in m[0]["untrusted_text"]' 2>/dev/null; then
+  pass "alice's mailbox holds the claim notification from board"
 else
-  fail "ask: state=$st reason=$rs obs=$obs"
+  fail "claim notification: state=$st reason=$rs obs=$obs"
 fi
 
 # The invite had two uses.
