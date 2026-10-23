@@ -32,7 +32,7 @@ import (
 )
 
 // Version is set by the build.
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 // Header names set by the anet service module.
 const (

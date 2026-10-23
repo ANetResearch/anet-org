@@ -40,3 +40,11 @@ Reference
    reference/configuration
    reference/cli
    reference/decisions
+
+Release notes
+=============
+
+.. toctree::
+   :maxdepth: 1
+
+   news
