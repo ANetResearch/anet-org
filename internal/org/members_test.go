@@ -18,7 +18,7 @@ func TestInfoForAnyone(t *testing.T) {
 	if obj(m["caller"])["member"] != false {
 		t.Fatal("stranger shown as member")
 	}
-	if len(list(m["capabilities"])) != 25 {
+	if len(list(m["capabilities"])) != 28 {
 		t.Fatalf("capabilities: %v", m["capabilities"])
 	}
 	e.join(aidAlice, "alice")
@@ -237,7 +237,10 @@ func TestMembersDirectory(t *testing.T) {
 	if len(st) != 1 || str(obj(st[0])["handle"]) != "prof-li" {
 		t.Fatalf("staff: %v", st)
 	}
-	q := list(e.ok(aidAlice, "org.members", map[string]any{"query": "bo", "include_aid": true})["members"])
+	// Members do not learn each other's AIDs; administrators do.
+	e.fail(aidAlice, "org.members", map[string]any{"query": "bo", "include_aid": true}, CodeNotPermitted)
+	e.join(aidAdmin, "chair")
+	q := list(e.ok(aidAdmin, "org.members", map[string]any{"query": "bo", "include_aid": true})["members"])
 	if len(q) != 1 || str(obj(q[0])["aid"]) != aidBob {
 		t.Fatalf("query: %v", q)
 	}

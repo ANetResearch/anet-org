@@ -164,6 +164,9 @@ func (s *Service) register() {
 		"admin.invite.revoke": {"admin", adminOnly, s.adminInviteRevoke, false},
 		"admin.invite.list":   {"admin", adminOnly, s.adminInviteList, false},
 		"admin.member.remove": {"admin", adminOnly, s.adminMemberRemove, false},
+		"admin.member.list":   {"admin", adminOnly, s.adminMemberList, false},
+		"admin.settings.get":  {"admin", adminOnly, s.adminSettingsGet, false},
+		"admin.settings.set":  {"admin", adminOnly, s.adminSettingsSet, false},
 	}
 	for id := range s.caps {
 		s.ordered = append(s.ordered, id)

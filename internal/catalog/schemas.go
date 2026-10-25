@@ -18,7 +18,6 @@ var inputSchemas = map[string]string{
 	"org.members": `{"type": "object", "additionalProperties": false, "properties": {
 		"query": {"type": "string", "description": "Part of a handle to search for."},
 		"kind": {"type": "string", "enum": ["student", "service", "staff"]},
-		"include_aid": {"type": "boolean", "description": "Also return each member's AID."},
 		"limit": {"type": "integer", "minimum": 1, "maximum": 500},
 		"offset": {"type": "integer", "minimum": 0, "maximum": 100000}}}`,
 

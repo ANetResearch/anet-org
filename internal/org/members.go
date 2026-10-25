@@ -567,6 +567,11 @@ func (s *Service) orgMembers(ctx context.Context, c *call) (any, error) {
 	if err := decode(c.raw, &a); err != nil {
 		return nil, err
 	}
+	// Members find each other by handle and talk through the organisation;
+	// AIDs, which reach a member's node outside it, are for administrators.
+	if a.IncludeAID && !c.caller.Local && !s.admins[c.caller.AID] {
+		return nil, errNotPermitted("administrators (include_aid)")
+	}
 	return s.listMembers(ctx, a)
 }
 

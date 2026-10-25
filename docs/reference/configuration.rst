@@ -59,6 +59,12 @@ Top-level keys
 ``max_concurrent``
    Calls handled at once; default 64. Beyond it, calls are refused with
    ``busy``.
+``agent_profile_file``
+   Optional absolute path. The server writes the agent settings
+   (``admin.settings.set``) there as JSON (``organisation``, ``brief``,
+   ``model``, ``updated_at``), mode 0640, at start and after every change, for
+   the account that runs the agent to read before each run. Its directory must
+   be writable by the server; give it the group of the agent's account.
 ``rates``
    Per-member limits by family, each ``{"per_minute": N, "per_day": N}``.
 

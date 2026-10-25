@@ -174,6 +174,9 @@ func cmdServe(args []string) error {
 		return err
 	}
 	defer db.Close()
+	if err := svc.WriteProfile(context.Background()); err != nil {
+		return fmt.Errorf("agent_profile_file: %w", err)
+	}
 	srv := server.New(svc, token, cfg.MaxConcurrent, log)
 	peers := []int{os.Getuid()}
 	extra, err := server.ResolveUsers(cfg.PeerUsers)

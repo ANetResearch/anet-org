@@ -158,6 +158,18 @@
       {
         "allow_only": true,
         "id": "admin.member.remove"
+      },
+      {
+        "allow_only": true,
+        "id": "admin.member.list"
+      },
+      {
+        "allow_only": true,
+        "id": "admin.settings.get"
+      },
+      {
+        "allow_only": true,
+        "id": "admin.settings.set"
       }
     ]
   },
@@ -298,7 +310,7 @@
         },
         {
           "agent_tool": true,
-          "description": "Lists members by handle and kind (student, service, staff). Arguments, all optional: {\"query\": \"part of a handle\", \"kind\": \"staff\", \"include_aid\": true, \"limit\": 100, \"offset\": 0}. AIDs are returned only with include_aid. Only members may call it; others receive not_a_member. Arguments are a JSON object; unknown fields are refused with unknown_field. Errors arrive as a short code (the task fails with that reason).",
+          "description": "Lists members by handle and kind (student, service, staff); members reach each other by handle within the organisation. Arguments, all optional: {\"query\": \"part of a handle\", \"kind\": \"staff\", \"limit\": 100, \"offset\": 0}. Only members may call it; others receive not_a_member. Arguments are a JSON object; unknown fields are refused with unknown_field. Errors arrive as a short code (the task fails with that reason).",
           "examples": [
             "@anet who are the staff of Example Lab?",
             "anet delegate <org-aid> --capability org.members --args '{\"kind\":\"staff\"}'"
@@ -322,10 +334,6 @@
                   "service",
                   "staff"
                 ]
-              },
-              "include_aid": {
-                "type": "boolean",
-                "description": "Also return each member's AID."
               },
               "limit": {
                 "type": "integer",
@@ -1030,6 +1038,60 @@
             "admin"
           ],
           "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/admin.member.remove"
+        },
+        {
+          "description": "Administrators only. Lists members with handle, kind, AID, join time and invite id; {\"query\": \"part of a handle\"} narrows the list.",
+          "examples": [
+            "anet delegate <org-aid> --capability admin.member.list --args '{}'"
+          ],
+          "id": "admin.member.list",
+          "input_modes": [
+            "application/json"
+          ],
+          "name": "List members with AIDs",
+          "output_modes": [
+            "application/json"
+          ],
+          "tags": [
+            "admin"
+          ],
+          "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/admin.member.list"
+        },
+        {
+          "description": "Administrators only. Returns the brief the organisation's agent follows and its model tier (plan or api).",
+          "examples": [
+            "anet delegate <org-aid> --capability admin.settings.get --args '{}'"
+          ],
+          "id": "admin.settings.get",
+          "input_modes": [
+            "application/json"
+          ],
+          "name": "Read the agent settings",
+          "output_modes": [
+            "application/json"
+          ],
+          "tags": [
+            "admin"
+          ],
+          "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/admin.settings.get"
+        },
+        {
+          "description": "Administrators only. Sets the agent brief (at most 8000 bytes) and/or the model tier: {\"brief\": \"...\", \"model\": \"plan\"}. The next run of the agent uses them.",
+          "examples": [
+            "anet delegate <org-aid> --capability admin.settings.set --args '{\"model\":\"plan\"}'"
+          ],
+          "id": "admin.settings.set",
+          "input_modes": [
+            "application/json"
+          ],
+          "name": "Change the agent settings",
+          "output_modes": [
+            "application/json"
+          ],
+          "tags": [
+            "admin"
+          ],
+          "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/admin.settings.set"
         }
       ],
       "timeout_ms": 15000,

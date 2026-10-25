@@ -44,7 +44,7 @@ anet 本身不包含任何组织概念。`anet-org` 是一个独立程序，部�
 | `org.me` | 成员 | `{}` |
 | `org.leave` | 成员 | `{"confirm": true}` |
 | `org.rename` | 成员 | `{"handle"}` |
-| `org.members` | 成员 | `{"query"?, "kind"?, "include_aid"?, "limit"?, "offset"?}` |
+| `org.members` | 成员 | `{"query"?, "kind"?, "limit"?, "offset"?}`（仅含 handle；AID 仅对管理员可见） |
 | `msg.send` | 成员 | `{"to": 昵称或 "staff"（staff 可用 "all"）, "text"}` |
 | `msg.inbox` | 成员 | `{"since"?: 消息 id 或 RFC 3339 时间, "limit"?}` |
 | `msg.ack` | 成员 | `{"ids": [...]}` 或 `{"up_to": id}` |
@@ -64,6 +64,9 @@ anet 本身不包含任何组织概念。`anet-org` 是一个独立程序，部�
 | `admin.invite.revoke` | 管理员 | `{"id", "remove_joined_after"?}` |
 | `admin.invite.list` | 管理员 | `{"all"?}` |
 | `admin.member.remove` | 管理员 | `{"handle", "ban"?}` |
+| `admin.member.list` | 管理员 | `{"query"?}`（含 AID） |
+| `admin.settings.get` | 管理员 | `{}` |
+| `admin.settings.set` | 管理员 | `{"brief"?, "model"?: plan 或 api}` |
 
 答复均为 JSON 对象。拒绝采用 service 模块的错误格式，即 HTTP 4xx 加 `{"error": "<代码>"}`，调用方的任务以该代码
 失败，例如 `invite_expired`、`invite_used_up`、`invite_unknown`、`not_a_member`、`handle_taken`、

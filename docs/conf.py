@@ -3,7 +3,7 @@
 project = "anet-org"
 author = "Agent Network Research"
 copyright = "2026, Agent Network Research"
-release = "0.2.0"
+release = "0.2.1"
 version = "0.1"
 
 extensions = []

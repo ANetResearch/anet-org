@@ -58,9 +58,10 @@ Organisation
 
 ``org.members`` (member; agent tool)
    Arguments, all optional: ``query`` (part of a handle), ``kind``,
-   ``include_aid``, ``limit`` (default 100, at most 500), ``offset``. Returns
-   ``members`` (``handle``, ``kind``, ``joined_at`` and, with ``include_aid``,
-   ``aid``) and ``more``.
+   ``limit`` (default 100, at most 500), ``offset``. Returns ``members``
+   (``handle``, ``kind``, ``joined_at``) and ``more``. Members reach each other
+   by handle within the organisation; ``include_aid``, which adds ``aid``, is
+   refused with ``not_permitted`` unless the caller is an administrator.
 
 Messages
 ========
@@ -204,6 +205,21 @@ accepts them only from AIDs in ``admins``.
 ``admin.member.remove``
    Arguments: ``{"handle": "mallory", "ban": true}``. Returns ``removed`` and
    ``banned``.
+
+``admin.member.list``
+   Arguments: ``{"query": "part of a handle"}``, optional. Returns ``members``
+   (``handle``, ``kind``, ``aid``, ``joined_at``, ``invite_id``).
+
+``admin.settings.get``
+   Arguments: ``{}``. Returns the settings of the organisation's agent:
+   ``brief`` (the text the agent follows in every run: its role, scope and
+   rules), ``model`` (``plan`` or ``api``, the upstream of the model proxy),
+   ``updated_at`` and ``updated_by``.
+
+``admin.settings.set``
+   Arguments: ``brief`` (at most 8000 bytes) and/or ``model`` (``plan`` or
+   ``api``). Stores them and rewrites ``agent_profile_file``; the next run of
+   the agent uses them. The agent itself cannot call it.
 
 Error codes
 ===========

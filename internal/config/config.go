@@ -64,6 +64,10 @@ type Config struct {
 	JoinsPerMinutePerCode int `json:"joins_per_minute_per_code,omitempty"`
 	// MaxConcurrent bounds the calls the server handles at once.
 	MaxConcurrent int `json:"max_concurrent,omitempty"`
+	// AgentProfileFile, when set, is where the server writes the settings
+	// of the organisation's agent (admin.settings.set) as JSON, mode 0640,
+	// for the account that runs the agent to read before each run.
+	AgentProfileFile string `json:"agent_profile_file,omitempty"`
 }
 
 // Org describes the organisation.
@@ -235,6 +239,9 @@ func (c *Config) check() error {
 	}
 	if c.Database == "" {
 		return errors.New("config: database is required")
+	}
+	if c.AgentProfileFile != "" && !filepath.IsAbs(c.AgentProfileFile) {
+		return errors.New("config: agent_profile_file must be an absolute path")
 	}
 	for _, list := range [][]string{c.Admins, c.Staff} {
 		for _, a := range list {

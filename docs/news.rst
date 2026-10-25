@@ -4,6 +4,23 @@
 Release notes
 =============
 
+anet-org 0.2.1
+==============
+
+Released 2026-10-25. Requires anet 0.3.9 or later on the organisation's host.
+
+* ``org.members`` returns handles only. ``include_aid`` is refused with
+  ``not_permitted`` unless the caller is an administrator: members reach each
+  other by handle within the organisation, not through each other's nodes.
+* ``admin.member.list`` lists the members with their AIDs for the
+  administrators.
+* ``admin.settings.get`` and ``admin.settings.set`` manage the settings of the
+  organisation's agent: the brief it follows in every run and its model tier
+  (``plan`` or ``api``). The agent cannot change them.
+* The configuration option ``agent_profile_file`` names where the server writes
+  these settings for the account that runs the agent (JSON, mode 0640), at
+  start and after every change.
+
 anet-org 0.2.0
 ==============
 

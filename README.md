@@ -55,7 +55,7 @@ member's coding agent ── anet node ──(hub relay, end to end encrypted)�
 | `org.me` | member | `{}` |
 | `org.leave` | member | `{"confirm": true}` |
 | `org.rename` | member | `{"handle"}` |
-| `org.members` | member | `{"query"?, "kind"?, "include_aid"?, "limit"?, "offset"?}` |
+| `org.members` | member | `{"query"?, "kind"?, "limit"?, "offset"?}` (handles only; AIDs are for administrators) |
 | `msg.send` | member | `{"to": handle or "staff" (or "all" for staff), "text"}` |
 | `msg.inbox` | member | `{"since"?: id or RFC 3339 time, "limit"?}` |
 | `msg.ack` | member | `{"ids": [...]}` or `{"up_to": id}` |
@@ -75,6 +75,9 @@ member's coding agent ── anet node ──(hub relay, end to end encrypted)�
 | `admin.invite.revoke` | administrator | `{"id", "remove_joined_after"?}` |
 | `admin.invite.list` | administrator | `{"all"?}` |
 | `admin.member.remove` | administrator | `{"handle", "ban"?}` |
+| `admin.member.list` | administrator | `{"query"?}` (with AIDs) |
+| `admin.settings.get` | administrator | `{}` |
+| `admin.settings.set` | administrator | `{"brief"?, "model"?: plan or api}` |
 
 Replies are JSON objects. A refusal is the service module's error shape, an HTTP
 4xx with `{"error": "<code>"}`, and the caller's task fails with that code, for

@@ -19,7 +19,7 @@ func TestCatalogFitsCardLimits(t *testing.T) {
 	if err := Check(es); err != nil {
 		t.Fatal(err)
 	}
-	if len(es) != 26 {
+	if len(es) != 29 {
 		t.Fatalf("%d entries", len(es))
 	}
 	for _, e := range es {

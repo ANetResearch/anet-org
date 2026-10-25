@@ -101,9 +101,9 @@ func Entries(orgName, prefix string) []Entry {
 		},
 		{
 			ID: "org.members", Name: "Member directory",
-			Description: "Lists members by handle and kind (student, service, staff). Arguments, all optional: {\"query\": " +
-				"\"part of a handle\", \"kind\": \"staff\", \"include_aid\": true, \"limit\": 100, \"offset\": 0}. AIDs are " +
-				"returned only with include_aid." + members + common,
+			Description: "Lists members by handle and kind (student, service, staff); members reach each other by handle " +
+				"within the organisation. Arguments, all optional: {\"query\": \"part of a handle\", \"kind\": \"staff\", " +
+				"\"limit\": 100, \"offset\": 0}." + members + common,
 			Tags: []string{"organisation", "directory"}, Examples: []string{"@anet who are the staff of " + orgName + "?",
 				call("org.members", `{"kind":"staff"}`)},
 			MaxArgsBytes: 512,
@@ -268,6 +268,26 @@ func Entries(orgName, prefix string) []Entry {
 			Description: "Administrators only. Removes a member by handle; with ban the identity cannot join again. " +
 				"Arguments: {\"handle\": \"mallory\", \"ban\": true}.",
 			Tags: []string{"admin"}, Examples: []string{call("admin.member.remove", `{"handle":"mallory","ban":true}`)},
+			AllowOnly: true,
+		},
+		{
+			ID: "admin.member.list", Name: "List members with AIDs",
+			Description: "Administrators only. Lists members with handle, kind, AID, join time and invite id; " +
+				"{\"query\": \"part of a handle\"} narrows the list.",
+			Tags: []string{"admin"}, Examples: []string{call("admin.member.list", "{}")},
+			AllowOnly: true,
+		},
+		{
+			ID: "admin.settings.get", Name: "Read the agent settings",
+			Description: "Administrators only. Returns the brief the organisation's agent follows and its model tier (plan or api).",
+			Tags:        []string{"admin"}, Examples: []string{call("admin.settings.get", "{}")},
+			AllowOnly: true,
+		},
+		{
+			ID: "admin.settings.set", Name: "Change the agent settings",
+			Description: "Administrators only. Sets the agent brief (at most 8000 bytes) and/or the model tier: " +
+				"{\"brief\": \"...\", \"model\": \"plan\"}. The next run of the agent uses them.",
+			Tags: []string{"admin"}, Examples: []string{call("admin.settings.set", `{"model":"plan"}`)},
 			AllowOnly: true,
 		},
 	}
