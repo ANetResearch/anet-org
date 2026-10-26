@@ -59,12 +59,23 @@ type Service struct {
 	log     *slog.Logger
 	caps    map[string]capability
 	ordered []string
+	hubAge  HubAge
+}
+
+// HubAge tells since when the hub has certainly known an identity
+// (hubage.Checker). It returns hubage.ErrNotRegistered for an identity the
+// hub does not list as registered on it.
+type HubAge interface {
+	KnownSince(ctx context.Context, aid string) (time.Time, error)
 }
 
 // Options are the optional parts of a Service.
 type Options struct {
 	Now    func() time.Time
 	Logger *slog.Logger
+	// HubAge answers joins without a code (open_join); without it such
+	// joins are refused.
+	HubAge HubAge
 }
 
 // New returns a Service over an open database.
@@ -76,10 +87,13 @@ func New(cfg *config.Config, db *sql.DB, o Options) *Service {
 		o.Logger = slog.New(slog.NewJSONHandler(discard{}, nil))
 	}
 	s := &Service{cfg: cfg, db: db, now: o.Now, lim: ratelimit.New(o.Now),
-		admins: set(cfg.Admins), staff: set(cfg.Staff), log: o.Logger}
+		admins: set(cfg.Admins), staff: set(cfg.Staff), log: o.Logger, hubAge: o.HubAge}
 	s.register()
 	if err := s.fillSkeletons(context.Background()); err != nil {
 		s.log.Error("cannot fill handle skeletons", "err", err.Error())
+	}
+	if err := s.pruneReports(context.Background()); err != nil {
+		s.log.Error("cannot prune closed reports", "err", err.Error())
 	}
 	return s
 }
@@ -140,6 +154,7 @@ func (s *Service) register() {
 		"org.leave":   {"identity", memberOnly, s.orgLeave, false},
 		"org.rename":  {"identity", memberOnly, s.orgRename, false},
 		"org.members": {"read", memberOnly, s.orgMembers, true},
+		"org.report":  {"report", memberOnly, s.orgReport, false},
 
 		"msg.send":  {"msg", memberOnly, s.msgSend, true},
 		"msg.inbox": {"read", memberOnly, s.msgInbox, true},
@@ -167,6 +182,8 @@ func (s *Service) register() {
 		"admin.member.list":   {"admin", adminOnly, s.adminMemberList, false},
 		"admin.settings.get":  {"admin", adminOnly, s.adminSettingsGet, false},
 		"admin.settings.set":  {"admin", adminOnly, s.adminSettingsSet, false},
+		"admin.report.list":   {"admin", adminOnly, s.adminReportList, false},
+		"admin.report.close":  {"admin", adminOnly, s.adminReportClose, false},
 	}
 	for id := range s.caps {
 		s.ordered = append(s.ordered, id)

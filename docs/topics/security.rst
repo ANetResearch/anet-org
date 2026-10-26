@@ -67,6 +67,41 @@ admits one identity, and the record of which code each member used shows which
 one. Multi-use codes remain for open events, with short expiry and a use limit
 close to the expected attendance.
 
+Open organisations
+------------------
+
+An organisation with ``open_join`` admits any identity that its hub has known
+for ``min_hub_age_hours`` (default 72), without a code. That delay is the only
+cost of an identity: someone who registers many identities and waits can join
+with all of them. What bounds them:
+
+* ``open_join.daily_joins`` and ``hourly_joins`` cap the joins without a code
+  per UTC day and per clock hour, so that a burst cannot take a whole day's
+  places; administrators can pause such joins (``open_join_paused``) while
+  invite codes keep working;
+* refused joins without a code count against their caller only, so that many
+  identities cannot use them to exhaust the organisation-wide failed-join
+  limit, which guards invite codes against guessing;
+* the per-member limits, ``global_daily`` and the mailbox rules apply as above;
+  an open organisation should set them lower than an invited one (see
+  :doc:`../intro/deployment`);
+* members report abuse with ``org.report``; administrators read the reports
+  with ``admin.report.list`` and remove and ban with ``admin.member.remove``.
+  A ban holds the identity, not the person, who can return with another
+  identity once it is old enough.
+
+The hub lookup gives the hub no more than it already has: the AID of an
+identity that asks to join. The organisation's server must reach the hub. With
+``open_join.hub_address`` set to ``unix:<path>``, a separate proxy unit
+(``systemd-socket-proxyd``, allowed to reach the hub's address only) carries
+the connection, and the server keeps ``PrivateNetwork=yes``: it has no network
+of its own and shares no abstract sockets or ports with the host.
+
+Reports copy the text they are about, so that administrators can act after
+the message was acknowledged or the item deleted. A closed report is deleted
+90 days after it was closed; open reports stay until an administrator closes
+them.
+
 Limits
 ======
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ANetResearch/anet-org/internal/hubage"
 	"github.com/ANetResearch/anet-org/internal/invite"
 )
 
@@ -18,9 +19,13 @@ const (
 	KindStudent = "student"
 	KindService = "service"
 	KindStaff   = "staff"
+	// KindMember is the kind of a member who joined without a code.
+	KindMember = "member"
 )
 
-func validKind(k string) bool { return k == KindStudent || k == KindService || k == KindStaff }
+func validKind(k string) bool {
+	return k == KindStudent || k == KindService || k == KindStaff || k == KindMember
+}
 
 // Member is one row of the members table.
 type Member struct {
@@ -237,6 +242,11 @@ func (s *Service) orgInfo(ctx context.Context, c *call) (any, error) {
 	if how == "" {
 		how = "Ask an administrator of " + s.cfg.Org.Name + " for an invite code, then call org.join with " +
 			`{"code": "` + s.cfg.Org.Prefix + `-XXXX-XXXX", "handle": "<your handle>"}.`
+		if s.cfg.OpenJoin.Enabled {
+			how = "Call org.join with " + `{"handle": "<your handle>"}` + "; no invite code is needed. The identity must have been " +
+				"registered on " + s.cfg.OpenJoin.Hub + " for at least " + strconv.Itoa(s.cfg.OpenJoin.MinHubAgeHours) +
+				" hours, counted from the end of the UTC day of its first registration."
+		}
 	}
 	you := map[string]any{"member": c.member != nil}
 	if c.member != nil {
@@ -253,10 +263,19 @@ func (s *Service) orgInfo(ctx context.Context, c *call) (any, error) {
 		"contact":       s.cfg.Org.Contact,
 		"how_to_join":   how,
 		"invite_format": s.cfg.Org.Prefix + "-XXXX-XXXX",
+		"join":          s.joinMode(),
 		"stats":         map[string]any{"members": n},
 		"caller":        you,
 		"capabilities":  s.PublicCapabilities(),
 	}, nil
+}
+
+// joinMode describes how one joins: with an invite code, or openly.
+func (s *Service) joinMode() map[string]any {
+	if !s.cfg.OpenJoin.Enabled {
+		return map[string]any{"mode": "invite"}
+	}
+	return map[string]any{"mode": "open", "hub": s.cfg.OpenJoin.Hub, "min_hub_age_hours": s.cfg.OpenJoin.MinHubAgeHours}
 }
 
 // --- org.admit ---
@@ -291,25 +310,42 @@ func (s *Service) orgJoin(ctx context.Context, c *call) (any, error) {
 	if over, retry := s.lim.Over("joinfail|*", failedJoinWindow, s.cfg.FailedJoinsGlobal); over {
 		return nil, errRate(retry)
 	}
-	res, err := s.join(ctx, c)
+	res, withCode, err := s.join(ctx, c)
 	if err != nil {
-		if e := AsError(err); e == nil || (e.Code != CodeRateLimited && e.Code != CodeInternal) {
+		e := AsError(err)
+		if e == nil || (e.Code != CodeRateLimited && e.Code != CodeInternal && e.Code != CodeHubUnavailable) {
 			s.lim.Add("joinfail|"+c.caller.AID, failedJoinWindow)
-			s.lim.Add("joinfail|*", failedJoinWindow)
+			// The limit for everyone exists against guessing codes. Refusals of
+			// joins without a code are ordinary in an open organisation and
+			// count against their caller only, so that no one can use them to
+			// keep everybody else out.
+			if withCode {
+				s.lim.Add("joinfail|*", failedJoinWindow)
+			}
 		}
 		return nil, err
 	}
 	return res, nil
 }
 
-func (s *Service) join(ctx context.Context, c *call) (any, error) {
+// join reports whether the call carried a code, for the failed-join limits.
+func (s *Service) join(ctx context.Context, c *call) (any, bool, error) {
 	var a joinArgs
 	if err := decode(c.raw, &a); err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	if strings.TrimSpace(a.Code) == "" {
-		return nil, errMissing("code")
+		if s.cfg.OpenJoin.Enabled {
+			res, err := s.openJoin(ctx, c, a)
+			return res, false, err
+		}
+		return nil, true, errMissing("code")
 	}
+	res, err := s.codeJoin(ctx, c, a)
+	return res, true, err
+}
+
+func (s *Service) codeJoin(ctx context.Context, c *call, a joinArgs) (any, error) {
 	if len(a.Code) > invite.MaxInputLen {
 		return nil, errTooLong("code", invite.MaxInputLen)
 	}
@@ -320,12 +356,8 @@ func (s *Service) join(ctx context.Context, c *call) (any, error) {
 	if c.member != nil {
 		return nil, newErr(http.StatusConflict, CodeAlreadyMember, "The caller is already a member, with the handle %q.", c.member.Handle)
 	}
-	var banned int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bans WHERE aid = ?`, c.caller.AID).Scan(&banned); err != nil {
-		return nil, s.internal("join", err)
-	}
-	if banned > 0 {
-		return nil, newErr(http.StatusForbidden, CodeJoinRefused, "This identity cannot join the organisation. Contact an administrator.")
+	if err := s.checkBan(ctx, c.caller.AID); err != nil {
+		return nil, err
 	}
 	inv, err := s.findInvite(ctx, a.Code)
 	if err != nil {
@@ -385,6 +417,153 @@ func (s *Service) join(ctx context.Context, c *call) (any, error) {
 	}, nil
 }
 
+func (s *Service) checkBan(ctx context.Context, aid string) error {
+	var banned int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bans WHERE aid = ?`, aid).Scan(&banned); err != nil {
+		return s.internal("join", err)
+	}
+	if banned > 0 {
+		return newErr(http.StatusForbidden, CodeJoinRefused, "This identity cannot join the organisation. Contact an administrator.")
+	}
+	return nil
+}
+
+// openJoin admits the caller without a code (open_join) once the hub has
+// known its identity for min_hub_age_hours. The cheap checks come first, so
+// that a refused call costs the hub nothing; the hub is asked last, and
+// only within the failed-join limits that org.join applies.
+func (s *Service) openJoin(ctx context.Context, c *call, a joinArgs) (any, error) {
+	h, err := s.checkHandle(a.Handle)
+	if err != nil {
+		return nil, err
+	}
+	if c.member != nil {
+		return nil, newErr(http.StatusConflict, CodeAlreadyMember, "The caller is already a member, with the handle %q.", c.member.Handle)
+	}
+	if err := s.checkBan(ctx, c.caller.AID); err != nil {
+		return nil, err
+	}
+	now := s.now()
+	if free, err := s.handleFreeNow(ctx, h, c.caller.AID, now.Unix()); err != nil {
+		return nil, err
+	} else if !free {
+		return nil, errHandleTaken(h)
+	}
+	if paused, err := s.openJoinPaused(ctx); err != nil {
+		return nil, err
+	} else if paused {
+		return nil, newErr(http.StatusForbidden, CodeJoinPaused,
+			"The administrators of %s have paused joining without an invite code. Try again later.", s.cfg.Org.Name)
+	}
+	hourKey, dayKey := "openjoin-h|*", "openjoin-d|*"
+	if over, retry := s.lim.Over(hourKey, time.Hour, s.cfg.OpenJoin.HourlyJoins); over {
+		e := errRate(retry)
+		e.Message = "The organisation's hourly limit of new members was reached."
+		return nil, e
+	}
+	if over, retry := s.lim.Over(dayKey, 24*time.Hour, s.cfg.OpenJoin.DailyJoins); over {
+		e := errRate(retry)
+		e.Message = "The organisation's daily limit of new members was reached. It resets at 00:00 UTC."
+		return nil, e
+	}
+	if s.hubAge == nil {
+		return nil, newErr(http.StatusFailedDependency, CodeHubUnavailable, "The organisation cannot reach the hub to check the identity.")
+	}
+	hctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	since, err := s.hubAge.KnownSince(hctx, c.caller.AID)
+	cancel()
+	if errors.Is(err, hubage.ErrNotRegistered) {
+		return nil, newErr(http.StatusForbidden, CodeNotOnHub,
+			"The identity is not registered on %s. Join that hub first (anet hub-register).", s.cfg.OpenJoin.Hub)
+	}
+	if err != nil {
+		s.log.Warn("hub lookup failed", "aid", c.caller.AID, "err", err.Error())
+		return nil, newErr(http.StatusFailedDependency, CodeHubUnavailable, "The organisation cannot reach the hub to check the identity. Try again later.")
+	}
+	ready := since.Add(time.Duration(s.cfg.OpenJoin.MinHubAgeHours) * time.Hour)
+	if now.Before(ready) {
+		// An answer, not a refusal: the caller learns from when joining
+		// works (a refusal would carry its code only). It still counts
+		// against the caller's failed joins, which bound the hub lookups.
+		s.lim.Add("joinfail|"+c.caller.AID, failedJoinWindow)
+		return map[string]any{
+			"joined":              false,
+			"status":              CodeIdentityTooNew,
+			"join_from":           ready.UTC().Format(time.RFC3339),
+			"retry_after_seconds": int64(ready.Sub(now) / time.Second),
+			"note": "The identity can join " + s.cfg.Org.Name + " once the hub has known it for " +
+				strconv.Itoa(s.cfg.OpenJoin.MinHubAgeHours) + " hours, counted from the end of the UTC day of its first " +
+				"registration. Call org.join again after join_from.",
+		}, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, s.internal("join", err)
+	}
+	defer tx.Rollback()
+	free, err := handleFree(ctx, tx, h, c.caller.AID, now.Unix())
+	if err != nil {
+		return nil, s.internal("join", err)
+	}
+	if !free {
+		return nil, errHandleTaken(h)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO members(aid, handle, skeleton, kind, joined_at, invite_id) VALUES(?, ?, ?, ?, ?, NULL)`,
+		c.caller.AID, h, Skeleton(h), KindMember, now.Unix()); err != nil {
+		if isUnique(err) {
+			return nil, errHandleTaken(h)
+		}
+		return nil, s.internal("join", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM held_handles WHERE aid = ?`, c.caller.AID); err != nil {
+		return nil, s.internal("join", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, s.internal("join", err)
+	}
+	s.lim.Add(hourKey, time.Hour)
+	s.lim.Add(dayKey, 24*time.Hour)
+	s.log.Info("member joined", "aid", c.caller.AID, "open", true)
+	return map[string]any{
+		"joined": true,
+		"org":    s.cfg.Org.Name,
+		"handle": h,
+		"kind":   KindMember,
+		"next_steps": "Welcome to " + s.cfg.Org.Name + ". Find members with org.members, ask a question or offer help on the " +
+			"task board (board.post, board.list), write to a member with msg.send and read replies with msg.inbox. " +
+			"Report abuse with org.report.",
+	}, nil
+}
+
+// openJoinPaused reports whether the administrators paused joining without
+// a code (admin.settings.set open_join_paused).
+func (s *Service) openJoinPaused(ctx context.Context) (bool, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'open_join.paused'`).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, s.internal("join", err)
+	}
+	return v == "1", nil
+}
+
+// handleFreeNow is handleFree outside a transaction, for the checks made
+// before the hub is asked.
+func (s *Service) handleFreeNow(ctx context.Context, h, aid string, now int64) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return false, s.internal("join", err)
+	}
+	defer tx.Rollback()
+	free, err := handleFree(ctx, tx, h, aid, now)
+	if err != nil {
+		return false, s.internal("join", err)
+	}
+	return free, nil
+}
+
 func isUnique(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
@@ -438,7 +617,14 @@ func (s *Service) orgLeave(ctx context.Context, c *call) (any, error) {
 	}
 	s.log.Info("member left", "aid", c.member.AID)
 	return map[string]any{"left": true, "handle": c.member.Handle,
-		"note": "The membership and the mailbox were deleted. Joining again needs a new invite code."}, nil
+		"note": s.rejoinNote()}, nil
+}
+
+func (s *Service) rejoinNote() string {
+	if s.cfg.OpenJoin.Enabled {
+		return "The membership and the mailbox were deleted. The handle stays reserved for this identity for 30 days."
+	}
+	return "The membership and the mailbox were deleted. Joining again needs a new invite code."
 }
 
 // removeMember deletes a member and its mailbox and reopens the items it
@@ -581,7 +767,7 @@ func (s *Service) listMembers(ctx context.Context, a membersArgs) (map[string]an
 		return nil, err
 	}
 	if a.Kind != "" && !validKind(a.Kind) {
-		return nil, errInvalid("kind", "use student, service or staff.")
+		return nil, errInvalid("kind", "use student, service, staff or member.")
 	}
 	if a.Offset < 0 || a.Offset > 100000 {
 		return nil, errInvalid("offset", "use a number from 0 to 100000.")

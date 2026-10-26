@@ -71,7 +71,7 @@ func TestGenConfig(t *testing.T) {
 	}
 	svc := v["modules"]["service"].(map[string]any)
 	caps := svc["capabilities"].([]any)
-	if svc["token_file"] != "${CREDENTIALS_DIRECTORY}/token" || len(caps) != 29 {
+	if svc["token_file"] != "${CREDENTIALS_DIRECTORY}/token" || len(caps) != 32 {
 		t.Fatalf("gen-config: %s", out.String())
 	}
 	if !strings.Contains(out.String(), `"url": "unix:///run/user/1000/anet-org/backend.sock:/v1/org.join"`) {

@@ -65,6 +65,31 @@ Top-level keys
    ``model``, ``updated_at``), mode 0640, at start and after every change, for
    the account that runs the agent to read before each run. Its directory must
    be writable by the server; give it the group of the agent's account.
+``open_join``
+   Optional. Admits members without an invite code::
+
+      "open_join": {"enabled": true, "hub": "https://hub.example.org",
+                    "hub_address": "unix:/run/anet-orgs/lab/hub.sock",
+                    "min_hub_age_hours": 72, "daily_joins": 300, "hourly_joins": 30}
+
+   ``org.join`` then accepts ``{"handle": "alice"}`` alone. The server asks the
+   hub for the caller's registry entry (``GET <hub>/agents/<aid>``) and admits
+   an identity that is registered on that hub and that the hub has known for at
+   least ``min_hub_age_hours`` (default 72, the hub's probation). The hub gives
+   the day of the first registration only, so the server counts from the end
+   of that day: an identity waits between 72 and 96 hours. ``daily_joins``
+   (default 300) and ``hourly_joins`` (default 30) cap the joins without a code
+   per UTC day and per clock hour; only successful joins count, and the counts
+   are kept in memory. Members who join so have the kind ``member``; invite
+   codes keep working beside it. Administrators pause and resume such joins
+   with ``admin.settings.set`` (``open_join_paused``).
+
+   ``hub_address``, optional, is where the server connects for the hub instead
+   of resolving its name: ``host:port``, or ``unix:<path>`` for a Unix socket
+   that forwards to the hub (for example ``systemd-socket-proxyd``), which lets
+   the server itself keep running without network access. The certificate is
+   always checked against the name in ``hub``. Only ``https`` hubs are
+   accepted.
 ``rates``
    Per-member limits by family, each ``{"per_minute": N, "per_day": N}``.
 
@@ -100,6 +125,9 @@ Top-level keys
       * - ``admit``
         - 600/min, 50000/day
         - ``org.admit`` (called by the node, per sender)
+      * - ``report``
+        - 3/min, 20/day
+        - ``org.report``
       * - ``admin``
         - 60/min, 2000/day
         - ``admin.*``

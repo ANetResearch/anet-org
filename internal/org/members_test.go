@@ -18,7 +18,7 @@ func TestInfoForAnyone(t *testing.T) {
 	if obj(m["caller"])["member"] != false {
 		t.Fatal("stranger shown as member")
 	}
-	if len(list(m["capabilities"])) != 28 {
+	if len(list(m["capabilities"])) != 31 {
 		t.Fatalf("capabilities: %v", m["capabilities"])
 	}
 	e.join(aidAlice, "alice")

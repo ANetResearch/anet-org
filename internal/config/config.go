@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +70,32 @@ type Config struct {
 	// of the organisation's agent (admin.settings.set) as JSON, mode 0640,
 	// for the account that runs the agent to read before each run.
 	AgentProfileFile string `json:"agent_profile_file,omitempty"`
+
+	// OpenJoin, when enabled, lets an identity join without an invite code
+	// once the hub has known it for long enough (docs/configuration.rst).
+	OpenJoin OpenJoin `json:"open_join,omitempty"`
+}
+
+// OpenJoin admits members without an invite code. The server asks the hub
+// for the caller's registration (GET <hub>/agents/<aid>) and admits an
+// identity that the hub has known for at least MinHubAgeHours.
+type OpenJoin struct {
+	Enabled bool `json:"enabled"`
+	// Hub is the https URL of the hub whose registrations count.
+	Hub string `json:"hub,omitempty"`
+	// HubAddress, when set, is the host:port the server connects to for the
+	// hub, instead of resolving the hub's name; TLS is still checked against
+	// the name in Hub. It lets the server run with network access to the
+	// hub's address only.
+	HubAddress string `json:"hub_address,omitempty"`
+	// MinHubAgeHours is the least time since the hub first registered the
+	// identity (default 72, the hub's probation).
+	MinHubAgeHours int `json:"min_hub_age_hours,omitempty"`
+	// DailyJoins caps the joins without a code per UTC day (default 300),
+	// HourlyJoins per clock hour (default 30), so that a burst cannot take a
+	// whole day's places. Only successful joins count.
+	DailyJoins  int `json:"daily_joins,omitempty"`
+	HourlyJoins int `json:"hourly_joins,omitempty"`
 }
 
 // Org describes the organisation.
@@ -94,6 +122,9 @@ const (
 	DefaultContentBytes      = 5 << 20
 	DefaultJoinsPerCode      = 30
 	DefaultMaxConcurrent     = 64
+	DefaultMinHubAgeHours    = 72
+	DefaultOpenDailyJoins    = 300
+	DefaultOpenHourlyJoins   = 30
 )
 
 // DefaultRates are the per-member limits of each capability family.
@@ -107,6 +138,7 @@ var DefaultRates = map[string]Rate{
 	"admit":    {PerMinute: 600, PerDay: 50000},
 	"admin":    {PerMinute: 60, PerDay: 2000},
 	"identity": {PerMinute: 10, PerDay: 50},
+	"report":   {PerMinute: 3, PerDay: 20},
 }
 
 // DefaultGlobalDaily are the organisation-wide daily caps.
@@ -199,6 +231,11 @@ func (c *Config) applyDefaults() {
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = DefaultMaxConcurrent
 	}
+	if c.OpenJoin.Enabled {
+		setDefault(&c.OpenJoin.MinHubAgeHours, DefaultMinHubAgeHours)
+		setDefault(&c.OpenJoin.DailyJoins, DefaultOpenDailyJoins)
+		setDefault(&c.OpenJoin.HourlyJoins, DefaultOpenHourlyJoins)
+	}
 	rates := map[string]Rate{}
 	for k, v := range DefaultRates {
 		rates[k] = v
@@ -274,6 +311,27 @@ func (c *Config) check() error {
 	}
 	if c.JoinsPerMinutePerCode > 1000 {
 		return errors.New("config: joins_per_minute_per_code is above 1000")
+	}
+	if oj := c.OpenJoin; oj.Enabled {
+		u, err := url.Parse(oj.Hub)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" {
+			return errors.New("config: open_join.hub must be the https URL of a hub, such as https://hub.example.org")
+		}
+		if p, ok := strings.CutPrefix(oj.HubAddress, "unix:"); ok {
+			if !filepath.IsAbs(p) || len(p) > 100 {
+				return errors.New("config: open_join.hub_address unix:<path> needs an absolute path of at most 100 bytes")
+			}
+		} else if oj.HubAddress != "" {
+			if _, port, err := net.SplitHostPort(oj.HubAddress); err != nil || port == "" {
+				return errors.New("config: open_join.hub_address must be host:port or unix:<path>")
+			}
+		}
+		if oj.MinHubAgeHours > 24*365 {
+			return errors.New("config: open_join.min_hub_age_hours is above one year")
+		}
+		if oj.DailyJoins > 100000 || oj.HourlyJoins > 100000 {
+			return errors.New("config: open_join.daily_joins and hourly_joins are limited to 100000")
+		}
 	}
 	return nil
 }

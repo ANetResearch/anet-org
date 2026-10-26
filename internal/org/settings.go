@@ -19,6 +19,9 @@ type AgentSettings struct {
 	Model     string `json:"model"`
 	UpdatedAt string `json:"updated_at,omitempty"`
 	UpdatedBy string `json:"updated_by,omitempty"`
+	// OpenJoinPaused is set (and shown) only in an organisation with
+	// open_join: joining without a code is paused.
+	OpenJoinPaused *bool `json:"open_join_paused,omitempty"`
 }
 
 // The model tiers: "plan" is the subscription endpoint, "api" the metered one.
@@ -50,7 +53,31 @@ func (s *Service) Settings(ctx context.Context) (AgentSettings, error) {
 	if n, err := strconv.ParseInt(v["agent.updated_at"], 10, 64); err == nil {
 		out.UpdatedAt = ts(n)
 	}
+	if s.cfg.OpenJoin.Enabled {
+		p, err := s.openJoinPaused(ctx)
+		if err != nil {
+			return AgentSettings{}, err
+		}
+		out.OpenJoinPaused = &p
+	}
 	return out, nil
+}
+
+// SetOpenJoinPaused pauses or resumes joining without a code.
+func (s *Service) SetOpenJoinPaused(ctx context.Context, by string, paused bool) error {
+	if !s.cfg.OpenJoin.Enabled {
+		return errInvalid("open_join_paused", "this organisation does not admit members without a code.")
+	}
+	v := "0"
+	if paused {
+		v = "1"
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO meta(key, value) VALUES('open_join.paused', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, v); err != nil {
+		return s.internal("settings", err)
+	}
+	s.log.Info("open join paused", "paused", paused, "by", by)
+	return nil
 }
 
 // SetSettings stores the agent settings and rewrites the profile file.
@@ -147,8 +174,9 @@ func (s *Service) writeProfile(a AgentSettings) error {
 // --- admin.settings.* and admin.member.list ---
 
 type settingsSetArgs struct {
-	Brief *string `json:"brief"`
-	Model *string `json:"model"`
+	Brief          *string `json:"brief"`
+	Model          *string `json:"model"`
+	OpenJoinPaused *bool   `json:"open_join_paused"`
 }
 
 func (s *Service) adminSettingsGet(ctx context.Context, c *call) (any, error) {
@@ -163,8 +191,16 @@ func (s *Service) adminSettingsSet(ctx context.Context, c *call) (any, error) {
 	if err := decode(c.raw, &a); err != nil {
 		return nil, err
 	}
-	if a.Brief == nil && a.Model == nil {
-		return nil, errMissing("brief or model")
+	if a.Brief == nil && a.Model == nil && a.OpenJoinPaused == nil {
+		return nil, errMissing("brief, model or open_join_paused")
+	}
+	if a.OpenJoinPaused != nil {
+		if err := s.SetOpenJoinPaused(ctx, adminName(c), *a.OpenJoinPaused); err != nil {
+			return nil, err
+		}
+		if a.Brief == nil && a.Model == nil {
+			return s.Settings(ctx)
+		}
 	}
 	return s.SetSettings(ctx, adminName(c), a.Brief, a.Model)
 }

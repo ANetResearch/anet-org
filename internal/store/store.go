@@ -18,7 +18,7 @@ import (
 //	1: 0.3.x up to 0.3.8
 //	2: 0.3.9: via columns (writes made by the organisation's agent), board
 //	   notifications (messages.item_id), no usage table
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -116,6 +116,24 @@ CREATE TABLE IF NOT EXISTS notes (
   via         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS notes_project ON notes(project_id, id);
+CREATE TABLE IF NOT EXISTS reports (
+  id               INTEGER PRIMARY KEY,
+  reporter_aid     TEXT NOT NULL,
+  reporter_handle  TEXT NOT NULL,
+  target_aid       TEXT NOT NULL,
+  target_handle    TEXT NOT NULL DEFAULT '',
+  subject          TEXT NOT NULL,
+  subject_id       INTEGER NOT NULL DEFAULT 0,
+  evidence         TEXT NOT NULL DEFAULT '',
+  reason           TEXT NOT NULL,
+  created_at       INTEGER NOT NULL,
+  closed_at        INTEGER,
+  closed_by        TEXT NOT NULL DEFAULT '',
+  close_note       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS reports_open ON reports(closed_at, id);
+CREATE INDEX IF NOT EXISTS reports_reporter ON reports(reporter_aid, closed_at);
+CREATE INDEX IF NOT EXISTS reports_target ON reports(target_aid, closed_at);
 `
 
 // Open opens (creating if needed) the database at path with WAL, foreign

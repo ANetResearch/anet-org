@@ -4,6 +4,33 @@
 Release notes
 =============
 
+anet-org 0.3.0
+==============
+
+Released 2026-10-26. Requires anet 0.3.9 or later on the organisation's host.
+
+* Open organisations. With ``open_join`` (:doc:`reference/configuration`),
+  ``org.join`` admits an identity without an invite code once the hub it names
+  has known that identity for ``min_hub_age_hours`` (default 72), counted from
+  the end of the UTC day of its first registration. The server asks the hub
+  for the identity's registry entry; ``hub_address`` (``host:port`` or
+  ``unix:<path>``) lets it reach the hub through a local proxy and keep no
+  network of its own. A too recent identity is answered with ``joined: false``
+  and ``join_from``. ``daily_joins`` and ``hourly_joins`` cap such joins
+  (successful ones count); ``admin.settings.set`` with ``open_join_paused``
+  pauses them. New error codes: ``not_on_hub``, ``join_paused``,
+  ``hub_unavailable``. Members who join so have the new kind ``member``.
+  ``org.info`` reports the ``join`` mode.
+* Refused joins without a code count against their caller only; the
+  organisation-wide failed-join limit counts joins with a code, which it guards
+  against guessing.
+* ``org.report`` lets members report a member, a message, a board item or a
+  comment; ``admin.report.list`` and ``admin.report.close`` serve the
+  administrators. The rate family ``report`` (3/min, 20/day) limits it. Closed
+  reports are deleted 90 days after closing.
+* The database schema is version 3 (table ``reports``); an earlier database is
+  migrated at start.
+
 anet-org 0.2.1
 ==============
 

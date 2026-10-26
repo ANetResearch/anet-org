@@ -59,6 +59,13 @@
       },
       {
         "discard": true,
+        "id": "org.report",
+        "max_args_bytes": 2048,
+        "per_caller_per_day": 20,
+        "per_caller_per_min": 3
+      },
+      {
+        "discard": true,
         "id": "msg.send",
         "max_args_bytes": 8192,
         "per_caller_per_day": 300,
@@ -170,6 +177,14 @@
       {
         "allow_only": true,
         "id": "admin.settings.set"
+      },
+      {
+        "allow_only": true,
+        "id": "admin.report.list"
+      },
+      {
+        "allow_only": true,
+        "id": "admin.report.close"
       }
     ]
   },
@@ -203,7 +218,7 @@
           "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/org.info"
         },
         {
-          "description": "Joins Example Lab with an invite code and chooses a handle. Arguments: {\"code\": \"LAB-7K2M-9XQD\", \"handle\": \"alice\"}. The code is case-insensitive; separators are optional. A handle has 2 to 24 characters: lower-case letters, digits, '_' and '-', starting with a letter; names such as admin or staff are reserved, and a handle that looks like a member's (\"a1ice\" for \"alice\") counts as taken. Returns {\"joined\": true, \"handle\", \"kind\"}. Errors: invite_unknown, invite_expired, invite_revoked, invite_used_up, invalid_handle, handle_reserved, handle_taken, already_member, rate_limited. Arguments are a JSON object; unknown fields are refused with unknown_field. Errors arrive as a short code (the task fails with that reason).",
+          "description": "Joins Example Lab with an invite code and chooses a handle. Arguments: {\"code\": \"LAB-7K2M-9XQD\", \"handle\": \"alice\"}. The code is case-insensitive; separators are optional. A handle has 2 to 24 characters: lower-case letters, digits, '_' and '-', starting with a letter; names such as admin or staff are reserved, and a handle that looks like a member's (\"a1ice\" for \"alice\") counts as taken. Returns {\"joined\": true, \"handle\", \"kind\"}. Errors: invite_unknown, invite_expired, invite_revoked, invite_used_up, invalid_handle, handle_reserved, handle_taken, already_member, rate_limited. An organisation that admits members without a code (org.info: join.mode open) takes {\"handle\": \"alice\"} alone, once the hub has known the caller's identity for the hours org.info names. Before then it answers {\"joined\": false, \"status\": \"identity_too_new\", \"join_from\": \"<time>\"}: call again after join_from. Further errors there: not_on_hub, join_paused, hub_unavailable. Arguments are a JSON object; unknown fields are refused with unknown_field. Errors arrive as a short code (the task fails with that reason).",
           "examples": [
             "@anet join Example Lab with invite code LAB-7K2M-9XQD as alice",
             "anet delegate <org-aid> --capability org.join --args '{\"code\":\"LAB-7K2M-9XQD\",\"handle\":\"alice\"}'"
@@ -356,6 +371,26 @@
             "directory"
           ],
           "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/org.members"
+        },
+        {
+          "description": "Reports a member, or something a member wrote, to the administrators. Arguments: exactly one of {\"handle\": \"mallory\"}, {\"message_id\": 12} (a message in the caller's mailbox), {\"board_item\": 7} or {\"comment_id\": 30}, and {\"reason\": \"...\"} (up to 1000 bytes). The text reported is copied into the report for the administrators; the member reported is not told who reported it. At most 20 open reports per member. Errors: member_unknown, item_unknown, invalid_value, limit_reached, rate_limited. Only members may call it; others receive not_a_member. Arguments are a JSON object; unknown fields are refused with unknown_field. Errors arrive as a short code (the task fails with that reason).",
+          "examples": [
+            "@anet report message 12 in Example Lab as spam",
+            "anet delegate <org-aid> --capability org.report --args '{\"message_id\":12,\"reason\":\"Unsolicited advertising.\"}'"
+          ],
+          "id": "org.report",
+          "input_modes": [
+            "application/json"
+          ],
+          "name": "Report abuse",
+          "output_modes": [
+            "application/json"
+          ],
+          "tags": [
+            "organisation",
+            "moderation"
+          ],
+          "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/org.report"
         },
         {
           "agent_tool": true,
@@ -1076,7 +1111,7 @@
           "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/admin.settings.get"
         },
         {
-          "description": "Administrators only. Sets the agent brief (at most 8000 bytes) and/or the model tier: {\"brief\": \"...\", \"model\": \"plan\"}. The next run of the agent uses them.",
+          "description": "Administrators only. Sets the agent brief (at most 8000 bytes) and/or the model tier: {\"brief\": \"...\", \"model\": \"plan\"}. The next run of the agent uses them. In an organisation that admits members without a code, {\"open_join_paused\": true} pauses such joins and false resumes them.",
           "examples": [
             "anet delegate <org-aid> --capability admin.settings.set --args '{\"model\":\"plan\"}'"
           ],
@@ -1092,6 +1127,42 @@
             "admin"
           ],
           "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/admin.settings.set"
+        },
+        {
+          "description": "Administrators only. Lists reports, newest first: subject, reporter, the member reported (handle and AID), the number of open reports against that member, the reason and the text reported. Arguments, all optional: {\"status\": \"open|closed|all\", \"limit\": 50, \"before\": <id>}.",
+          "examples": [
+            "anet delegate <org-aid> --capability admin.report.list --args '{}'"
+          ],
+          "id": "admin.report.list",
+          "input_modes": [
+            "application/json"
+          ],
+          "name": "List reports",
+          "output_modes": [
+            "application/json"
+          ],
+          "tags": [
+            "admin"
+          ],
+          "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/admin.report.list"
+        },
+        {
+          "description": "Administrators only. Closes a report, with an optional note: {\"id\": 4, \"note\": \"member removed\"}. Removing the member is a separate call (admin.member.remove).",
+          "examples": [
+            "anet delegate <org-aid> --capability admin.report.close --args '{\"id\":4,\"note\":\"Member removed.\"}'"
+          ],
+          "id": "admin.report.close",
+          "input_modes": [
+            "application/json"
+          ],
+          "name": "Close a report",
+          "output_modes": [
+            "application/json"
+          ],
+          "tags": [
+            "admin"
+          ],
+          "url": "unix:///run/user/1000/anet-org/backend.sock:/v1/admin.report.close"
         }
       ],
       "timeout_ms": 15000,

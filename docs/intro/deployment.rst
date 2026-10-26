@@ -72,6 +72,45 @@ Steps
    1`` (one single-use code per person) and give them out together with the
    node's AID.
 
+An open organisation
+====================
+
+An organisation that anyone on a hub can join, without an invite code, runs
+the same way with ``open_join`` in its configuration and lower limits than an
+invited one, for example::
+
+   "open_join": {"enabled": true, "hub": "https://hub.example.org",
+                 "hub_address": "unix:/run/anet-orgs/lab/hub.sock"},
+   "mailbox_per_sender": 10,
+   "global_daily": {"msg": 5000, "write": 3000},
+   "rates": {"msg": {"per_minute": 6, "per_day": 60},
+             "write": {"per_minute": 6, "per_day": 60}}
+
+The server reaches the hub through a Unix socket that a proxy unit forwards to
+the hub's address, so that the server keeps ``PrivateNetwork=yes``::
+
+   # hub-proxy.socket
+   [Socket]
+   ListenStream=/run/anet-orgs/lab/hub.sock
+   SocketUser=anet-org
+   SocketMode=0600
+
+   # hub-proxy.service
+   [Service]
+   ExecStart=/lib/systemd/systemd-socket-proxyd --exit-idle-time=5min 203.0.113.10:443
+   DynamicUser=yes
+   PrivateNetwork=no
+   IPAddressDeny=any
+   IPAddressAllow=203.0.113.10
+   RestrictAddressFamilies=AF_UNIX AF_INET
+
+The certificate is checked against the hub's name in ``open_join.hub``, so the
+proxy cannot read or change the lookups. Re-resolve the address and restart the
+proxy when the hub moves.
+
+Without an organisation agent (``gen-config --no-agent``), members use the
+capabilities directly: the directory, messages, the task board and reports.
+
 Backups
 =======
 

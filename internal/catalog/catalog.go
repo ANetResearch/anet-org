@@ -63,7 +63,11 @@ func Entries(orgName, prefix string) []Entry {
 				"\", \"handle\": \"alice\"}. The code is case-insensitive; separators are optional. A handle has 2 to 24 " +
 				"characters: lower-case letters, digits, '_' and '-', starting with a letter; names such as admin or staff are " +
 				"reserved, and a handle that looks like a member's (\"a1ice\" for \"alice\") counts as taken. Returns {\"joined\": true, \"handle\", \"kind\"}. Errors: invite_unknown, invite_expired, " +
-				"invite_revoked, invite_used_up, invalid_handle, handle_reserved, handle_taken, already_member, rate_limited." + common,
+				"invite_revoked, invite_used_up, invalid_handle, handle_reserved, handle_taken, already_member, rate_limited. " +
+				"An organisation that admits members without a code (org.info: join.mode open) takes {\"handle\": \"alice\"} alone, " +
+				"once the hub has known the caller's identity for the hours org.info names. Before then it answers {\"joined\": false, " +
+				"\"status\": \"identity_too_new\", \"join_from\": \"<time>\"}: call again after join_from. Further errors there: " +
+				"not_on_hub, join_paused, hub_unavailable." + common,
 			Tags: []string{"organisation", "join", "invite"},
 			Examples: []string{"@anet join " + orgName + " with invite code " + code + " as alice",
 				call("org.join", `{"code":"`+code+`","handle":"alice"}`)},
@@ -107,6 +111,17 @@ func Entries(orgName, prefix string) []Entry {
 			Tags: []string{"organisation", "directory"}, Examples: []string{"@anet who are the staff of " + orgName + "?",
 				call("org.members", `{"kind":"staff"}`)},
 			MaxArgsBytes: 512,
+		},
+		{
+			ID: "org.report", Name: "Report abuse",
+			Description: "Reports a member, or something a member wrote, to the administrators. Arguments: exactly one of " +
+				"{\"handle\": \"mallory\"}, {\"message_id\": 12} (a message in the caller's mailbox), {\"board_item\": 7} or " +
+				"{\"comment_id\": 30}, and {\"reason\": \"...\"} (up to 1000 bytes). The text reported is copied into the report " +
+				"for the administrators; the member reported is not told who reported it. At most 20 open reports per member. " +
+				"Errors: member_unknown, item_unknown, invalid_value, limit_reached, rate_limited." + members + common,
+			Tags: []string{"organisation", "moderation"}, Examples: []string{"@anet report message 12 in " + orgName + " as spam",
+				call("org.report", `{"message_id":12,"reason":"Unsolicited advertising."}`)},
+			PerCallerPerMin: 3, PerCallerPerDay: 20, MaxArgsBytes: 2048,
 		},
 		{
 			ID: "msg.send", Name: "Send a message",
@@ -286,8 +301,24 @@ func Entries(orgName, prefix string) []Entry {
 		{
 			ID: "admin.settings.set", Name: "Change the agent settings",
 			Description: "Administrators only. Sets the agent brief (at most 8000 bytes) and/or the model tier: " +
-				"{\"brief\": \"...\", \"model\": \"plan\"}. The next run of the agent uses them.",
+				"{\"brief\": \"...\", \"model\": \"plan\"}. The next run of the agent uses them. In an organisation that admits " +
+				"members without a code, {\"open_join_paused\": true} pauses such joins and false resumes them.",
 			Tags: []string{"admin"}, Examples: []string{call("admin.settings.set", `{"model":"plan"}`)},
+			AllowOnly: true,
+		},
+		{
+			ID: "admin.report.list", Name: "List reports",
+			Description: "Administrators only. Lists reports, newest first: subject, reporter, the member reported (handle and AID), " +
+				"the number of open reports against that member, the reason and the text reported. Arguments, all optional: " +
+				"{\"status\": \"open|closed|all\", \"limit\": 50, \"before\": <id>}.",
+			Tags: []string{"admin"}, Examples: []string{call("admin.report.list", "{}")},
+			AllowOnly: true,
+		},
+		{
+			ID: "admin.report.close", Name: "Close a report",
+			Description: "Administrators only. Closes a report, with an optional note: {\"id\": 4, \"note\": \"member removed\"}. " +
+				"Removing the member is a separate call (admin.member.remove).",
+			Tags: []string{"admin"}, Examples: []string{call("admin.report.close", `{"id":4,"note":"Member removed."}`)},
 			AllowOnly: true,
 		},
 	}
@@ -295,7 +326,7 @@ func Entries(orgName, prefix string) []Entry {
 	// end: messages, codes, notes and board items stay in anet-org only.
 	for i := range e {
 		switch e[i].ID {
-		case "org.join", "msg.send", "msg.inbox", "msg.ack", "ask":
+		case "org.join", "org.report", "msg.send", "msg.inbox", "msg.ack", "ask":
 			e[i].Discard = true
 		}
 		if strings.HasPrefix(e[i].ID, "board.") || strings.HasPrefix(e[i].ID, "research.") {

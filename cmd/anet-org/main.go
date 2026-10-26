@@ -40,6 +40,7 @@ import (
 	"github.com/ANetResearch/anet-org/internal/agentcfg"
 	"github.com/ANetResearch/anet-org/internal/catalog"
 	"github.com/ANetResearch/anet-org/internal/config"
+	"github.com/ANetResearch/anet-org/internal/hubage"
 	"github.com/ANetResearch/anet-org/internal/org"
 	"github.com/ANetResearch/anet-org/internal/server"
 	"github.com/ANetResearch/anet-org/internal/store"
@@ -152,7 +153,16 @@ func openService(cfg *config.Config, log *slog.Logger) (*org.Service, *sql.DB, e
 	if err != nil {
 		return nil, nil, err
 	}
-	return org.New(cfg, db, org.Options{Logger: log}), db, nil
+	o := org.Options{Logger: log}
+	if cfg.OpenJoin.Enabled {
+		hc, err := hubage.New(cfg.OpenJoin.Hub, cfg.OpenJoin.HubAddress)
+		if err != nil {
+			db.Close()
+			return nil, nil, err
+		}
+		o.HubAge = hc
+	}
+	return org.New(cfg, db, o), db, nil
 }
 
 func cmdServe(args []string) error {

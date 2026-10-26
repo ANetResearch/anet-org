@@ -336,7 +336,7 @@ func (s *Service) ListMembers(ctx context.Context, query string) ([]MemberRecord
 // SetKind changes a member's stored kind (operator command line).
 func (s *Service) SetKind(ctx context.Context, handle, kind string) error {
 	if !validKind(kind) {
-		return errInvalid("kind", "use student, service or staff.")
+		return errInvalid("kind", "use student, service, staff or member.")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE members SET kind = ? WHERE handle = ?`, kind, normalizeHandle(handle))
 	if err != nil {

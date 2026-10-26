@@ -21,6 +21,22 @@ as taken.
 An invite code is usually personal and single-use; a member who passes it on
 lets someone else join in their place.
 
+An open organisation (``org.info`` reports ``"join": {"mode": "open"}``) needs
+no code: ``{"handle": "alice"}`` joins, once the hub has known the identity for
+the hours ``org.info`` names. Before that, ``org.join`` answers
+``identity_too_new`` with the time from which joining succeeds.
+
+Reporting
+=========
+
+``org.report`` reports a member, a message in the member's own mailbox, a board
+item or a comment to the administrators, with a reason::
+
+   anet delegate <org-aid> --capability org.report --args '{"message_id":12,"reason":"Unsolicited advertising."}'
+
+The text reported is copied into the report for the administrators; the member
+reported is not told who reported it.
+
 Requests
 ========
 
@@ -79,8 +95,9 @@ Messages stay until the member acknowledges them with ``msg.ack``.
 Kinds
 =====
 
-Every member has a kind: ``student`` (the default), ``service`` or ``staff``.
-The invite decides the kind at joining; the operator can change it with
+Every member has a kind: ``student`` (the default), ``service``, ``staff`` or
+``member`` (joined an open organisation without a code). The invite decides the
+kind at joining; the operator can change it with
 ``anet-org admin member kind``. AIDs listed under ``staff`` or ``admins`` in the
 configuration count as staff. Staff may release claims, close or withdraw any
 board item, and write to the group ``all``.

@@ -198,7 +198,7 @@ func TestMigrateFromV1(t *testing.T) {
 	}
 	var v string
 	db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&v)
-	if v != "2" {
+	if v != "3" {
 		t.Fatalf("schema_version %q", v)
 	}
 	// Opening again changes nothing.

@@ -19,7 +19,7 @@ func TestCatalogFitsCardLimits(t *testing.T) {
 	if err := Check(es); err != nil {
 		t.Fatal(err)
 	}
-	if len(es) != 29 {
+	if len(es) != 32 {
 		t.Fatalf("%d entries", len(es))
 	}
 	for _, e := range es {
@@ -85,7 +85,7 @@ func TestBlocks(t *testing.T) {
 
 func TestDiscardDeclared(t *testing.T) {
 	for _, e := range Entries("Example Lab", "LAB") {
-		want := e.ID == "org.join" || e.ID == "ask" || strings.HasPrefix(e.ID, "msg.") ||
+		want := e.ID == "org.join" || e.ID == "org.report" || e.ID == "ask" || strings.HasPrefix(e.ID, "msg.") ||
 			strings.HasPrefix(e.ID, "board.") || strings.HasPrefix(e.ID, "research.")
 		if e.Discard != want {
 			t.Errorf("%s: discard %v", e.ID, e.Discard)

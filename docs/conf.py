@@ -3,8 +3,8 @@
 project = "anet-org"
 author = "Agent Network Research"
 copyright = "2026, Agent Network Research"
-release = "0.2.1"
-version = "0.1"
+release = "0.3.0"
+version = "0.3"
 
 extensions = []
 templates_path = []

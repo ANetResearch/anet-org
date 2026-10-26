@@ -81,6 +81,11 @@ const (
 	CodeAskMoved           = "ask_moved"
 	CodeAgentNotPermitted  = "agent_not_permitted"
 	CodeBadVia             = "bad_via"
+	CodeNotOnHub           = "not_on_hub"
+	CodeIdentityTooNew     = "identity_too_new"
+	CodeHubUnavailable     = "hub_unavailable"
+	CodeReportUnknown      = "report_unknown"
+	CodeJoinPaused         = "join_paused"
 )
 
 func errCallerRequired() *Error {
